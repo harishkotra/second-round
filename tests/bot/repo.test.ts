@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import {
+  branchBehindBy,
   branchName,
   diffText,
   ensureBranch,
@@ -8,6 +9,7 @@ import {
   listOpenPullRequests,
   slugify,
   updatePullRequest,
+  updatePullRequestBranch,
   type PullRequestView,
 } from '../../src/bot/repo.js'
 import { asOctokit, fakeOctokit, httpError } from '../helpers/fake-octokit.js'
@@ -19,6 +21,8 @@ const GET_REF = 'GET /repos/{owner}/{repo}/git/ref/{ref}'
 const CREATE_REF = 'POST /repos/{owner}/{repo}/git/refs'
 const PATCH_PR = 'PATCH /repos/{owner}/{repo}/pulls/{pull_number}'
 const GET_CHECKS = 'GET /repos/{owner}/{repo}/commits/{ref}/check-runs'
+const GET_COMPARE = 'GET /repos/{owner}/{repo}/compare/{basehead}'
+const UPDATE_BRANCH = 'PUT /repos/{owner}/{repo}/pulls/{pull_number}/update-branch'
 
 describe('slugify', () => {
   test('lowercases and hyphenates', () => {
@@ -53,6 +57,7 @@ describe('diffText', () => {
     body: 'a body',
     headSha: 'sha',
     baseBranch: 'main',
+    mergeableState: 'clean',
     files: [
       { path: 'src/a.ts', patch: '+added line' },
       { path: 'assets/logo.png', patch: null },
@@ -165,5 +170,21 @@ describe('listCheckRuns', () => {
       // before every real one, so it loses to any run that did happen.
       { name: 'build', conclusion: null, status: 'queued', startedAt: '' },
     ])
+  })
+})
+
+describe('branchBehindBy', () => {
+  test('asks GitHub to compare the branches rather than trusting mergeable_state', async () => {
+    const fake = fakeOctokit({ [GET_COMPARE]: () => ({ behind_by: 3 }) })
+    expect(await branchBehindBy(asOctokit(fake), ctx, 'main', 'bot/R-001/a')).toBe(3)
+    expect(fake.calls[0]?.params['basehead']).toBe('main...bot/R-001/a')
+  })
+})
+
+describe('updatePullRequestBranch', () => {
+  test('asks GitHub to bring the branch up to date', async () => {
+    const fake = fakeOctokit({ [UPDATE_BRANCH]: () => ({}) })
+    await updatePullRequestBranch(asOctokit(fake), ctx, 32)
+    expect(fake.calls[0]?.params['pull_number']).toBe(32)
   })
 })

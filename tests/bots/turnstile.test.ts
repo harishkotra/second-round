@@ -22,6 +22,8 @@ const GET_FILES = 'GET /repos/{owner}/{repo}/pulls/{pull_number}/files'
 const GET_CHECKS = 'GET /repos/{owner}/{repo}/commits/{ref}/check-runs'
 const GET_REVIEWS = 'GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews'
 const MERGE = 'PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge'
+const GET_COMPARE = 'GET /repos/{owner}/{repo}/compare/{basehead}'
+const UPDATE_BRANCH = 'PUT /repos/{owner}/{repo}/pulls/{pull_number}/update-branch'
 
 const green: CheckRun[] = REQUIRED_CHECKS.map((name) => ({
   name,
@@ -65,6 +67,8 @@ function routes(): Record<string, RouteHandler> {
     [GET_CHECKS]: () => ({ check_runs: green }),
     [GET_REVIEWS]: () => [{ user: { login: 'sr-sentry[bot]' }, state: 'APPROVED' }],
     [MERGE]: () => ({ sha: 'merged-sha' }),
+    [GET_COMPARE]: () => ({ behind_by: 0 }),
+    [UPDATE_BRANCH]: () => ({}),
   }
 }
 
@@ -264,6 +268,32 @@ describe('handler', () => {
     expect(events[0]?.verdict).toBe('blocked')
     expect(events[0]?.reason).toContain('unreadable')
     expect(events[1]?.action).toBe('pr.merged')
+  })
+
+  test('a pull request that is behind its base is brought up to date, not merged', async () => {
+    const fake = fakeOctokit({
+      ...routes(),
+      [GET_COMPARE]: () => ({ behind_by: 3 }),
+    })
+    const events = await handler({ ...runBase, octokit: asOctokit(fake) }, { pullNumber: 12 })
+    expect(events).toHaveLength(1)
+    expect(events[0]?.action).toBe('pr.updated')
+    expect(events[0]?.reason).toBe('branch-behind:3')
+    expect(fake.calls.some((call) => call.route === UPDATE_BRANCH)).toBe(true)
+    expect(fake.calls.some((call) => call.route === MERGE)).toBe(false)
+  })
+
+  test('a dry run leaves the branch alone', async () => {
+    const fake = fakeOctokit({
+      ...routes(),
+      [GET_COMPARE]: () => ({ behind_by: 3 }),
+    })
+    const events = await handler(
+      { ...runBase, octokit: asOctokit(fake), dryRun: true },
+      { pullNumber: 12 },
+    )
+    expect(events).toEqual([])
+    expect(fake.calls.some((call) => call.route === UPDATE_BRANCH)).toBe(false)
   })
 
   test('a merge that fails is recorded, not swallowed', async () => {

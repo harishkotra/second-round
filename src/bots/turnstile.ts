@@ -10,11 +10,13 @@
 import type { Octokit } from 'octokit'
 import { isEntry, type RepoContext } from '../bot/github.js'
 import {
+  branchBehindBy,
   listCheckRuns,
   listOpenPullRequests,
   listReviews,
   mergePullRequest,
   pullRequestView,
+  updatePullRequestBranch,
   type CheckRun,
   type PullRequestView,
   type Review,
@@ -218,6 +220,30 @@ async function attemptMerge(
     // acts. An explicitly named pull request always records its reason.
     if (!explicit) return []
     return [blockedEvent(requirementId, pullNumber, decision.reason)]
+  }
+
+  // Branch protection here is strict, so a pull request must be level with main
+  // before it can merge. The crew pushes to main, so an open pull request falls
+  // behind just by waiting, and GitHub then refuses with "N of N required status
+  // checks are expected". Bring the branch up to date and merge on the next pass:
+  // the push wakes the reviewer, and the workflow_run trigger wakes this bot.
+  const behind = await branchBehindBy(run.octokit, run.repo, view.baseBranch, view.headSha)
+  if (behind > 0) {
+    if (run.dryRun) {
+      run.log(`dry run, would bring #${pullNumber} up to date with ${view.baseBranch} (${behind} behind)`)
+      return []
+    }
+    await updatePullRequestBranch(run.octokit, run.repo, pullNumber)
+    run.log(`#${pullNumber} was ${behind} behind ${view.baseBranch}; updated the branch, will merge next pass`)
+    return [
+      makeEvent({
+        bot: SLUG,
+        action: 'pr.updated',
+        req: requirementId,
+        artifact: String(pullNumber),
+        reason: `branch-behind:${behind}`,
+      }),
+    ]
   }
 
   let sha: string

@@ -21,6 +21,7 @@ const view: PullRequestView = {
   body: 'Closes R-001',
   headSha: 'sha',
   baseBranch: 'main',
+  mergeableState: 'clean',
   files: [{ path: 'src/app/intake.ts', patch: '+export const intake = true' }],
 }
 

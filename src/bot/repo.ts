@@ -203,6 +203,8 @@ export type PullRequestView = {
   body: string
   headSha: string
   baseBranch: string
+  /** GitHub's own view: clean, behind, blocked, dirty, unstable, unknown. */
+  mergeableState: string
   files: { path: string; patch: string | null }[]
 }
 
@@ -228,8 +230,55 @@ export async function pullRequestView(
     body: pr.body ?? '',
     headSha: pr.head.sha,
     baseBranch: pr.base.ref,
+    mergeableState: pr.mergeable_state ?? 'unknown',
     files: files.map((file) => ({ path: file.filename, patch: file.patch ?? null })),
   }
+}
+
+/**
+ * Ask GitHub to bring a pull request's branch up to date with its base.
+ *
+ * Branch protection on this repository is strict: a pull request must be level
+ * with main before it can merge. Since the crew pushes to main, an open pull
+ * request falls behind simply by waiting. GitHub then refuses the merge with
+ * "N of N required status checks are expected", because the required checks have
+ * not run against the updated branch.
+ *
+ * This creates a merge commit on the branch, which dismisses any stale review.
+ * The reviewer wakes on the push and approves again, and the next pass merges.
+ */
+export async function updatePullRequestBranch(
+  octokit: Octokit,
+  ctx: RepoContext,
+  pullNumber: number,
+): Promise<void> {
+  await octokit.request('PUT /repos/{owner}/{repo}/pulls/{pull_number}/update-branch', {
+    owner: ctx.owner,
+    repo: ctx.repo,
+    pull_number: pullNumber,
+  })
+}
+
+/**
+ * How many commits the base has that the head does not.
+ *
+ * The pull request's own `mergeable_state` is not usable for this: it reported
+ * `clean` for a branch that was three commits behind main, so the merge was
+ * refused on protection grounds while the field said everything was fine.
+ * Comparing the branches is deterministic.
+ */
+export async function branchBehindBy(
+  octokit: Octokit,
+  ctx: RepoContext,
+  base: string,
+  head: string,
+): Promise<number> {
+  const { data } = await octokit.request('GET /repos/{owner}/{repo}/compare/{basehead}', {
+    owner: ctx.owner,
+    repo: ctx.repo,
+    basehead: `${base}...${head}`,
+  })
+  return data.behind_by
 }
 
 export function diffText(view: PullRequestView, limit = 12000): string {
