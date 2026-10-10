@@ -4,6 +4,8 @@ import {
   diffText,
   ensureBranch,
   findOpenPullRequest,
+  listCheckRuns,
+  listOpenPullRequests,
   slugify,
   updatePullRequest,
   type PullRequestView,
@@ -16,6 +18,7 @@ const GET_BRANCH = 'GET /repos/{owner}/{repo}/branches/{branch}'
 const GET_REF = 'GET /repos/{owner}/{repo}/git/ref/{ref}'
 const CREATE_REF = 'POST /repos/{owner}/{repo}/git/refs'
 const PATCH_PR = 'PATCH /repos/{owner}/{repo}/pulls/{pull_number}'
+const GET_CHECKS = 'GET /repos/{owner}/{repo}/commits/{ref}/check-runs'
 
 describe('slugify', () => {
   test('lowercases and hyphenates', () => {
@@ -125,5 +128,42 @@ describe('updatePullRequest', () => {
     expect(call?.params['pull_number']).toBe(31)
     expect(call?.params['title']).toBe('a title')
     expect(call?.params['body']).toBe('a body')
+  })
+})
+
+describe('listOpenPullRequests', () => {
+  test('returns every open pull request with its head branch', async () => {
+    const fake = fakeOctokit({
+      [GET_PULLS]: () => [
+        { number: 1, head: { ref: 'bot/R-001/a' } },
+        { number: 2, head: { ref: 'feature/human-work' } },
+      ],
+    })
+    expect(await listOpenPullRequests(asOctokit(fake), ctx)).toEqual([
+      { number: 1, headRef: 'bot/R-001/a' },
+      { number: 2, headRef: 'feature/human-work' },
+    ])
+    expect(fake.calls[0]?.params['state']).toBe('open')
+  })
+})
+
+describe('listCheckRuns', () => {
+  test('keeps the start time, which is how the newest run of a name is chosen', async () => {
+    const fake = fakeOctokit({
+      [GET_CHECKS]: () => ({
+        check_runs: [
+          { name: 'lint', conclusion: 'cancelled', status: 'completed', started_at: 'T1' },
+          { name: 'lint', conclusion: 'success', status: 'completed', started_at: 'T2' },
+          { name: 'build', conclusion: null, status: 'queued', started_at: null },
+        ],
+      }),
+    })
+    expect(await listCheckRuns(asOctokit(fake), ctx, 'sha')).toEqual([
+      { name: 'lint', conclusion: 'cancelled', status: 'completed', startedAt: 'T1' },
+      { name: 'lint', conclusion: 'success', status: 'completed', startedAt: 'T2' },
+      // A run that has not started has no timestamp. An empty string sorts
+      // before every real one, so it loses to any run that did happen.
+      { name: 'build', conclusion: null, status: 'queued', startedAt: '' },
+    ])
   })
 })

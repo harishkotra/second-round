@@ -11,6 +11,7 @@ import type { Octokit } from 'octokit'
 import { isEntry, type RepoContext } from '../bot/github.js'
 import {
   listCheckRuns,
+  listOpenPullRequests,
   listReviews,
   mergePullRequest,
   pullRequestView,
@@ -49,8 +50,28 @@ export function latestReviewPerAuthor(reviews: Review[]): Review[] {
   return [...latest.values()]
 }
 
+/**
+ * The newest run of each check name.
+ *
+ * One commit can carry several runs of the same name: a concurrency group
+ * cancels the first attempt and a later attempt succeeds. Keying by name alone
+ * takes whichever the API happened to return last, which is how PR #32 came to
+ * be refused with `check-not-green:lint:cancelled` while its lint had in fact
+ * passed. GitHub judges the most recent run, so this does too.
+ */
+export function latestCheckPerName(checks: CheckRun[]): Map<string, CheckRun> {
+  const latest = new Map<string, CheckRun>()
+  for (const check of checks) {
+    const existing = latest.get(check.name)
+    if (existing === undefined || check.startedAt > existing.startedAt) {
+      latest.set(check.name, check)
+    }
+  }
+  return latest
+}
+
 export function canMerge(state: MergeState): MergeDecision {
-  const byName = new Map(state.checks.map((check) => [check.name, check]))
+  const byName = latestCheckPerName(state.checks)
 
   for (const required of REQUIRED_CHECKS) {
     const check = byName.get(required)
@@ -81,9 +102,18 @@ export function humanApproved(reviews: Review[]): boolean {
   )
 }
 
-export async function pullNumberFromEnv(env: NodeJS.ProcessEnv = process.env): Promise<number> {
+/**
+ * The pull request to attempt, or null to sweep.
+ *
+ * A blank PR_NUMBER means "look around and merge whatever is ready", which is
+ * what the scheduled run does. The sweep exists because this bot used to have
+ * exactly one trigger, `check_suite`, and GitHub documents that a check suite
+ * created by GitHub Actions never fires a workflow. The trigger could not work,
+ * so PR #32 sat green and approved and unmerged with nothing to collect it.
+ */
+export function pullNumberFromEnv(env: NodeJS.ProcessEnv = process.env): number | null {
   const raw = env['PR_NUMBER']
-  if (raw === undefined || raw.trim() === '') throw new Error('PR_NUMBER is not set')
+  if (raw === undefined || raw.trim() === '') return null
   const parsed = Number(raw)
   if (!Number.isInteger(parsed) || parsed <= 0) {
     throw new Error(`PR_NUMBER must be a positive integer, got "${raw}"`)
@@ -115,17 +145,27 @@ export async function gatherState(
   }
 }
 
-export async function handler(
+export const BOT_BRANCH_PREFIX = 'bot/'
+
+/**
+ * The open pull requests this bot is allowed to consider: the ones the crew
+ * opened. A human's pull request is not the crew's to merge.
+ */
+export async function sweepTargets(octokit: Octokit, ctx: RepoContext): Promise<number[]> {
+  const open = await listOpenPullRequests(octokit, ctx)
+  return open
+    .filter((pull) => pull.headRef.startsWith(BOT_BRANCH_PREFIX))
+    .map((pull) => pull.number)
+}
+
+async function attemptMerge(
   run: BotRun,
-  deps: TurnstileDeps = {},
+  pullNumber: number,
+  validIds: Set<string>,
+  recordRefusal: boolean,
 ): Promise<LedgerEvent[]> {
-  const pullNumber = deps.pullNumber ?? (await pullNumberFromEnv())
   const { state, view } = await gatherState(run.octokit, run.repo, pullNumber)
-
-  const requirements = await loadRequirements()
-  const validIds = new Set(requirements.map((item) => item.id))
   const requirementId = requirementIdIn(view.body, validIds)
-
   const decision = canMerge(state)
 
   if (run.dryRun) {
@@ -135,6 +175,10 @@ export async function handler(
 
   if (!decision.ok) {
     run.log(`refusing #${pullNumber}: ${decision.reason}`)
+    // A sweep passes over everything every half hour. Recording each refusal
+    // would bury the ledger in the same line repeating, so a sweep only speaks
+    // when it acts. An explicitly named pull request always records the reason.
+    if (!recordRefusal) return []
     return [
       makeEvent({
         bot: SLUG,
@@ -158,6 +202,34 @@ export async function handler(
       artifact: String(pullNumber),
     }),
   ]
+}
+
+export async function handler(
+  run: BotRun,
+  deps: TurnstileDeps = {},
+): Promise<LedgerEvent[]> {
+  const requirements = await loadRequirements()
+  const validIds = new Set(requirements.map((item) => item.id))
+
+  const single = deps.pullNumber ?? pullNumberFromEnv()
+  const targets = single === null ? await sweepTargets(run.octokit, run.repo) : [single]
+
+  if (targets.length === 0) {
+    run.log('nothing to merge')
+    return []
+  }
+
+  const events: LedgerEvent[] = []
+  for (const pullNumber of targets) {
+    try {
+      events.push(...(await attemptMerge(run, pullNumber, validIds, single !== null)))
+    } catch (error) {
+      // A sweep must not die on one unreadable pull request and strand the rest.
+      const message = error instanceof Error ? error.message : String(error)
+      run.log(`skipping #${pullNumber}: ${message}`)
+    }
+  }
+  return events
 }
 
 if (isEntry(process.argv[1] ?? '', 'turnstile')) {

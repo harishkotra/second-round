@@ -144,6 +144,22 @@ export async function findOpenPullRequest(
   return first === undefined ? null : first.number
 }
 
+export type OpenPullRequest = { number: number; headRef: string }
+
+/** Every open pull request, so a merger can sweep rather than wait for an event. */
+export async function listOpenPullRequests(
+  octokit: Octokit,
+  ctx: RepoContext,
+): Promise<OpenPullRequest[]> {
+  const { data } = await octokit.request('GET /repos/{owner}/{repo}/pulls', {
+    owner: ctx.owner,
+    repo: ctx.repo,
+    state: 'open',
+    per_page: 100,
+  })
+  return data.map((pull) => ({ number: pull.number, headRef: pull.head.ref }))
+}
+
 /** Creates the branch only when it is missing, so a retry can reuse it. */
 export async function ensureBranch(
   octokit: Octokit,
@@ -245,6 +261,8 @@ export type CheckRun = {
   name: string
   conclusion: string | null
   status: string
+  /** When this run started. A commit can carry several runs of the same name. */
+  startedAt: string
 }
 
 export async function listCheckRuns(
@@ -262,6 +280,7 @@ export async function listCheckRuns(
     name: run.name,
     conclusion: run.conclusion,
     status: run.status,
+    startedAt: run.started_at ?? '',
   }))
 }
 

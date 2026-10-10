@@ -25,23 +25,31 @@ describe('issueNumberFromEnv', () => {
   })
 })
 
-describe('pullNumberFromEnv', () => {
-  const parsers: [string, (env: NodeJS.ProcessEnv) => Promise<number>][] = [
-    ['sentry', sentryPullNumber],
-    ['turnstile', turnstilePullNumber],
-  ]
+describe('sentry pullNumberFromEnv', () => {
+  test('reads a positive integer', async () => {
+    expect(await sentryPullNumber({ PR_NUMBER: '7' })).toBe(7)
+  })
 
-  for (const [name, parse] of parsers) {
-    test(`${name} reads a positive integer`, async () => {
-      expect(await parse({ PR_NUMBER: '7' })).toBe(7)
-    })
+  test('throws when unset, because a reviewer has no target without one', async () => {
+    await expect(sentryPullNumber({})).rejects.toThrow(/PR_NUMBER is not set/)
+  })
 
-    test(`${name} throws when unset`, async () => {
-      await expect(parse({})).rejects.toThrow(/PR_NUMBER is not set/)
-    })
+  test('throws on a negative value', async () => {
+    await expect(sentryPullNumber({ PR_NUMBER: '-3' })).rejects.toThrow(/positive integer/)
+  })
+})
 
-    test(`${name} throws on a negative value`, async () => {
-      await expect(parse({ PR_NUMBER: '-3' })).rejects.toThrow(/positive integer/)
-    })
-  }
+describe('turnstile pullNumberFromEnv', () => {
+  test('reads a positive integer', () => {
+    expect(turnstilePullNumber({ PR_NUMBER: '7' })).toBe(7)
+  })
+
+  test('null when unset, which means sweep rather than an error', () => {
+    expect(turnstilePullNumber({})).toBeNull()
+    expect(turnstilePullNumber({ PR_NUMBER: '  ' })).toBeNull()
+  })
+
+  test('still refuses nonsense rather than quietly sweeping', () => {
+    expect(() => turnstilePullNumber({ PR_NUMBER: '-3' })).toThrow(/positive integer/)
+  })
 })
