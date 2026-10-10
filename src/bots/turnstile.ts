@@ -158,13 +158,52 @@ export async function sweepTargets(octokit: Octokit, ctx: RepoContext): Promise<
     .map((pull) => pull.number)
 }
 
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function blockedEvent(
+  requirementId: string | null,
+  pullNumber: number,
+  reason: string,
+): LedgerEvent {
+  return makeEvent({
+    bot: SLUG,
+    action: 'pr.reviewed',
+    req: requirementId,
+    artifact: String(pullNumber),
+    verdict: 'blocked',
+    reason,
+  })
+}
+
+/**
+ * A sweep runs every half hour. Recording the same failure every time would bury
+ * the record, so a reason already recorded against this pull request is not
+ * repeated. A *different* reason is recorded, because that is news.
+ */
+function isRepeat(history: LedgerEvent[], artifact: string, reason: string): boolean {
+  const previous = [...history].reverse().find((event) => event.artifact === artifact)
+  return previous !== undefined && previous.reason === reason
+}
+
 async function attemptMerge(
   run: BotRun,
   pullNumber: number,
   validIds: Set<string>,
-  recordRefusal: boolean,
+  explicit: boolean,
 ): Promise<LedgerEvent[]> {
-  const { state, view } = await gatherState(run.octokit, run.repo, pullNumber)
+  let gathered: { state: MergeState; view: PullRequestView }
+  try {
+    gathered = await gatherState(run.octokit, run.repo, pullNumber)
+  } catch (error) {
+    const reason = `unreadable: ${messageOf(error)}`
+    run.log(`cannot read #${pullNumber}: ${reason}`)
+    if (!explicit && isRepeat(run.history, String(pullNumber), reason)) return []
+    return [blockedEvent(null, pullNumber, reason)]
+  }
+
+  const { state, view } = gathered
   const requirementId = requirementIdIn(view.body, validIds)
   const decision = canMerge(state)
 
@@ -175,23 +214,26 @@ async function attemptMerge(
 
   if (!decision.ok) {
     run.log(`refusing #${pullNumber}: ${decision.reason}`)
-    // A sweep passes over everything every half hour. Recording each refusal
-    // would bury the ledger in the same line repeating, so a sweep only speaks
-    // when it acts. An explicitly named pull request always records the reason.
-    if (!recordRefusal) return []
-    return [
-      makeEvent({
-        bot: SLUG,
-        action: 'pr.reviewed',
-        req: requirementId,
-        artifact: String(pullNumber),
-        verdict: 'blocked',
-        reason: decision.reason,
-      }),
-    ]
+    // A sweep passes over everything every half hour, so it only speaks when it
+    // acts. An explicitly named pull request always records its reason.
+    if (!explicit) return []
+    return [blockedEvent(requirementId, pullNumber, decision.reason)]
   }
 
-  const sha = await mergePullRequest(run.octokit, run.repo, pullNumber)
+  let sha: string
+  try {
+    sha = await mergePullRequest(run.octokit, run.repo, pullNumber)
+  } catch (error) {
+    // The merge is the one thing this bot exists to do. Returning quietly here is
+    // how a real failure hid for two whole runs: a green run, an empty ledger,
+    // and a pull request that stayed open with nobody told why. Say it in the
+    // record instead.
+    const reason = `merge-failed: ${messageOf(error)}`
+    run.log(`merge failed for #${pullNumber}: ${reason}`)
+    if (!explicit && isRepeat(run.history, String(pullNumber), reason)) return []
+    return [blockedEvent(requirementId, pullNumber, reason)]
+  }
+
   run.log(`merged #${pullNumber} as ${sha.slice(0, 7)}`)
 
   return [
@@ -221,13 +263,7 @@ export async function handler(
 
   const events: LedgerEvent[] = []
   for (const pullNumber of targets) {
-    try {
-      events.push(...(await attemptMerge(run, pullNumber, validIds, single !== null)))
-    } catch (error) {
-      // A sweep must not die on one unreadable pull request and strand the rest.
-      const message = error instanceof Error ? error.message : String(error)
-      run.log(`skipping #${pullNumber}: ${message}`)
-    }
+    events.push(...(await attemptMerge(run, pullNumber, validIds, single !== null)))
   }
   return events
 }

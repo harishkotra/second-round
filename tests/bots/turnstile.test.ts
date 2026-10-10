@@ -12,6 +12,7 @@ import {
   sweepTargets,
   type MergeState,
 } from '../../src/bots/turnstile.js'
+import { makeEvent } from '../../src/ledger/schema.js'
 import { asOctokit, fakeOctokit, type RouteHandler } from '../helpers/fake-octokit.js'
 
 const ctx = { owner: 'o', repo: 'r' }
@@ -239,7 +240,7 @@ describe('handler', () => {
     expect(fake.calls.some((call) => call.params['pull_number'] === 14)).toBe(false)
   })
 
-  test('a sweep survives a pull request it cannot read, rather than stranding the rest', async () => {
+  test('a sweep records a pull request it cannot read, and carries on to the rest', async () => {
     const fake = fakeOctokit({
       ...routes(),
       [GET_PULLS]: () => [
@@ -259,7 +260,66 @@ describe('handler', () => {
     })
 
     const events = await handler({ ...runBase, octokit: asOctokit(fake) }, {})
-    expect(events.map((event) => event.artifact)).toEqual(['12'])
+    expect(events.map((event) => event.artifact)).toEqual(['13', '12'])
+    expect(events[0]?.verdict).toBe('blocked')
+    expect(events[0]?.reason).toContain('unreadable')
+    expect(events[1]?.action).toBe('pr.merged')
+  })
+
+  test('a merge that fails is recorded, not swallowed', async () => {
+    const fake = fakeOctokit({
+      ...routes(),
+      [MERGE]: () => {
+        throw Object.assign(new Error('HTTP 403'), { status: 403 })
+      },
+    })
+    const events = await handler({ ...runBase, octokit: asOctokit(fake) }, { pullNumber: 12 })
+    expect(events).toHaveLength(1)
+    expect(events[0]?.verdict).toBe('blocked')
+    expect(events[0]?.reason).toContain('merge-failed')
+    expect(events[0]?.reason).toContain('HTTP 403')
+  })
+
+  test('a sweep does not repeat a failure it has already recorded', async () => {
+    const fake = fakeOctokit({
+      ...routes(),
+      [GET_PULLS]: () => [{ number: 12, head: { ref: 'bot/R-001/thing' } }],
+      [MERGE]: () => {
+        throw Object.assign(new Error('HTTP 403'), { status: 403 })
+      },
+    })
+    const history = [
+      makeEvent({
+        bot: SLUG,
+        action: 'pr.reviewed',
+        artifact: '12',
+        verdict: 'blocked',
+        reason: 'merge-failed: HTTP 403',
+      }),
+    ]
+    const events = await handler({ ...runBase, octokit: asOctokit(fake), history }, {})
+    expect(events).toEqual([])
+  })
+
+  test('but a different failure is news and is recorded', async () => {
+    const fake = fakeOctokit({
+      ...routes(),
+      [GET_PULLS]: () => [{ number: 12, head: { ref: 'bot/R-001/thing' } }],
+      [MERGE]: () => {
+        throw Object.assign(new Error('HTTP 405'), { status: 405 })
+      },
+    })
+    const history = [
+      makeEvent({
+        bot: SLUG,
+        action: 'pr.reviewed',
+        artifact: '12',
+        verdict: 'blocked',
+        reason: 'merge-failed: HTTP 403',
+      }),
+    ]
+    const events = await handler({ ...runBase, octokit: asOctokit(fake), history }, {})
+    expect(events[0]?.reason).toContain('HTTP 405')
   })
 
   test('nothing to merge is not an error', async () => {

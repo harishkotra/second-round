@@ -64,11 +64,16 @@ jobs:
             echo "number=${{ inputs.pr }}" >> "$GITHUB_OUTPUT"
           fi
 
+      # Request exactly what merging needs, so a missing App permission fails
+      # here, loudly, instead of surfacing later as a silent refusal to merge.
       - uses: actions/create-github-app-token@v3
         id: token
         with:
           client-id: ${{ vars.APP_SR_TURNSTILE_CLIENT_ID }}
           private-key: ${{ secrets.APP_SR_TURNSTILE_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-checks: read
 
       - name: Run Turnstile
         run: node dist/src/bots/turnstile.js
