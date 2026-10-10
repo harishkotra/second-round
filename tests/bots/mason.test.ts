@@ -1,10 +1,13 @@
 import { describe, expect, test } from 'vitest'
+import type { CheckResult } from '../../src/bot/verify.js'
 import {
   buildPrompt,
   buildPrBody,
+  buildRepairPrompt,
   fetchIssue,
   handler,
   issueRequirementId,
+  MAX_REPAIRS,
   planImplementation,
   readNotes,
   SLUG,
@@ -18,9 +21,12 @@ const GET_REPO = 'GET /repos/{owner}/{repo}'
 const GET_TREE = 'GET /repos/{owner}/{repo}/git/trees/{tree_sha}'
 const GET_REF = 'GET /repos/{owner}/{repo}/git/ref/{ref}'
 const CREATE_REF = 'POST /repos/{owner}/{repo}/git/refs'
+const GET_BRANCH = 'GET /repos/{owner}/{repo}/branches/{branch}'
 const GET_CONTENT = 'GET /repos/{owner}/{repo}/contents/{path}'
 const PUT_CONTENT = 'PUT /repos/{owner}/{repo}/contents/{path}'
 const CREATE_PR = 'POST /repos/{owner}/{repo}/pulls'
+const GET_PULLS = 'GET /repos/{owner}/{repo}/pulls'
+const PATCH_PR = 'PATCH /repos/{owner}/{repo}/pulls/{pull_number}'
 
 const requirement: Requirement = { id: 'R-001', phase: 0, text: 'Accept a pasted job description' }
 
@@ -44,6 +50,11 @@ function happyRoutes(): Record<string, RouteHandler> {
     [GET_TREE]: () => ({ tree: [{ path: 'package.json' }, { path: 'src/index.ts' }] }),
     [GET_REF]: () => ({ object: { sha: 'head-sha' } }),
     [CREATE_REF]: () => ({}),
+    [GET_BRANCH]: () => {
+      throw Object.assign(new Error('HTTP 404'), { status: 404 })
+    },
+    [GET_PULLS]: () => [],
+    [PATCH_PR]: () => ({}),
     [GET_CONTENT]: () => {
       throw Object.assign(new Error('HTTP 404'), { status: 404 })
     },
@@ -70,6 +81,17 @@ function generate(text: string): () => Promise<{
     costUsd: 0.0021,
   })
 }
+
+/**
+ * The self-check is injected everywhere in these tests. Without it the handler
+ * would call the real verifier, which writes files into the working tree and runs
+ * npm inside the test process.
+ */
+const passingVerify = async (): Promise<CheckResult> => ({ ok: true, output: '' })
+const failingVerify = async (): Promise<CheckResult> => ({
+  ok: false,
+  output: 'typecheck failed: src/app/intake.ts(1,1)',
+})
 
 describe('issueRequirementId', () => {
   test('reads the id from the issue title', () => {
@@ -169,10 +191,27 @@ describe('buildPrompt', () => {
   })
 })
 
+describe('buildRepairPrompt', () => {
+  test('carries the failure back, and forbids a conversation', () => {
+    const prompt = buildRepairPrompt(
+      requirement,
+      [{ path: 'src/a.ts', content: 'x' }],
+      'typecheck failed',
+    )
+    expect(prompt).toContain('did not pass its own checks')
+    expect(prompt).toContain('src/a.ts')
+    expect(prompt).toContain('typecheck failed')
+    expect(prompt).toContain('Do not explain')
+  })
+})
+
 describe('handler', () => {
   test('opens one pull request naming the requirement, and records both events', async () => {
     const fake = fakeOctokit(happyRoutes())
-    const events = await handler({ ...runBase, octokit: asOctokit(fake) }, { issueNumber: 4, generate: generate(patchText) })
+    const events = await handler(
+      { ...runBase, octokit: asOctokit(fake) },
+      { issueNumber: 4, generate: generate(patchText), verify: passingVerify },
+    )
 
     expect(events.map((event) => event.action)).toEqual(['issue.claimed', 'pr.opened'])
     expect(events[0]?.req).toBe('R-001')
@@ -248,6 +287,7 @@ describe('handler', () => {
     await handler({ ...runBase, octokit: asOctokit(fake) }, {
       issueNumber: 4,
       generate: generate(patchText),
+      verify: passingVerify,
     })
     const put = fake.calls.find((call) => call.route === PUT_CONTENT)
     expect(put?.params['sha']).toBe('existing-sha')
@@ -264,7 +304,87 @@ describe('handler', () => {
       handler({ ...runBase, octokit: asOctokit(fake) }, {
         issueNumber: 4,
         generate: generate(patchText),
+        verify: passingVerify,
       }),
     ).rejects.toThrow(/HTTP 500/)
+  })
+
+  test('fails its own check, repairs once, and ships the repaired files', async () => {
+    const repaired =
+      '{"files":[{"path":"src/app/intake.ts","content":"export const intake = 2"}],"notes":"fixed"}'
+    let calls = 0
+    const generate = async (): Promise<{
+      text: string
+      model: string
+      inputTokens: number
+      outputTokens: number
+      costUsd: number
+    }> => {
+      calls += 1
+      return {
+        text: calls === 1 ? patchText : repaired,
+        model: 'deepseek-v4.1-flash',
+        inputTokens: 100,
+        outputTokens: 50,
+        costUsd: 0.0021,
+      }
+    }
+    let checks = 0
+    const verify = async (): Promise<CheckResult> => {
+      checks += 1
+      return { ok: checks > 1, output: 'typecheck failed' }
+    }
+
+    const fake = fakeOctokit(happyRoutes())
+    const events = await handler({ ...runBase, octokit: asOctokit(fake) }, {
+      issueNumber: 4,
+      generate,
+      verify,
+    })
+
+    expect(calls).toBe(1 + MAX_REPAIRS)
+    const put = fake.calls.find((call) => call.route === PUT_CONTENT)
+    expect(decoded(put?.params['content'])).toContain('export const intake = 2')
+    // Both model calls are charged to the requirement, not just the first.
+    expect(events[0]?.costUsd).toBeCloseTo(0.0042, 6)
+  })
+
+  test('updates the pull request that already exists instead of opening a second one', async () => {
+    const fake = fakeOctokit({
+      ...happyRoutes(),
+      [GET_PULLS]: () => [{ number: 31 }],
+    })
+    const events = await handler({ ...runBase, octokit: asOctokit(fake) }, {
+      issueNumber: 4,
+      generate: generate(patchText),
+      verify: passingVerify,
+    })
+
+    expect(fake.calls.some((call) => call.route === CREATE_PR)).toBe(false)
+    const patch = fake.calls.find((call) => call.route === PATCH_PR)
+    expect(patch?.params['pull_number']).toBe(31)
+    expect(events.map((event) => event.action)).toEqual(['issue.claimed', 'pr.updated'])
+    expect(events[1]?.artifact).toBe('31')
+  })
+
+  test('the pull request body carries the self-check verdict either way', async () => {
+    const clean = fakeOctokit(happyRoutes())
+    await handler({ ...runBase, octokit: asOctokit(clean) }, {
+      issueNumber: 4,
+      generate: generate(patchText),
+      verify: passingVerify,
+    })
+    const opened = clean.calls.find((call) => call.route === CREATE_PR)
+    expect(String(opened?.params['body'])).toContain('passed locally')
+
+    const dirty = fakeOctokit(happyRoutes())
+    await handler({ ...runBase, octokit: asOctokit(dirty) }, {
+      issueNumber: 4,
+      generate: generate(patchText),
+      verify: failingVerify,
+    })
+    const body = String(dirty.calls.find((call) => call.route === CREATE_PR)?.params['body'])
+    expect(body).toContain('## Self-check')
+    expect(body).toContain('typecheck failed')
   })
 })

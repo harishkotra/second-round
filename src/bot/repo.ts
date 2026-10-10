@@ -112,12 +112,99 @@ export async function openPullRequest(
   return data.number
 }
 
+function statusOf(error: unknown): number | null {
+  if (typeof error === 'object' && error !== null && 'status' in error) {
+    const status = (error as { status?: unknown }).status
+    if (typeof status === 'number') return status
+  }
+  return null
+}
+
+/**
+ * The open pull request whose head is `branch`, or null.
+ *
+ * This exists so a second attempt at a requirement updates the pull request that
+ * already exists instead of opening another one beside it. Without it, every
+ * retry produces a new pull request for the same requirement, and the review
+ * history for that requirement is scattered across all of them.
+ */
+export async function findOpenPullRequest(
+  octokit: Octokit,
+  ctx: RepoContext,
+  branch: string,
+): Promise<number | null> {
+  const { data } = await octokit.request('GET /repos/{owner}/{repo}/pulls', {
+    owner: ctx.owner,
+    repo: ctx.repo,
+    head: `${ctx.owner}:${branch}`,
+    state: 'open',
+    per_page: 100,
+  })
+  const first: (typeof data)[number] | undefined = data[0]
+  return first === undefined ? null : first.number
+}
+
+export type OpenPullRequest = { number: number; headRef: string }
+
+/** Every open pull request, so a merger can sweep rather than wait for an event. */
+export async function listOpenPullRequests(
+  octokit: Octokit,
+  ctx: RepoContext,
+): Promise<OpenPullRequest[]> {
+  const { data } = await octokit.request('GET /repos/{owner}/{repo}/pulls', {
+    owner: ctx.owner,
+    repo: ctx.repo,
+    state: 'open',
+    per_page: 100,
+  })
+  return data.map((pull) => ({ number: pull.number, headRef: pull.head.ref }))
+}
+
+/** Creates the branch only when it is missing, so a retry can reuse it. */
+export async function ensureBranch(
+  octokit: Octokit,
+  ctx: RepoContext,
+  branch: string,
+  fromBranch: string,
+): Promise<boolean> {
+  try {
+    await octokit.request('GET /repos/{owner}/{repo}/branches/{branch}', {
+      owner: ctx.owner,
+      repo: ctx.repo,
+      branch,
+    })
+    return false
+  } catch (error) {
+    if (statusOf(error) !== 404) throw error
+  }
+
+  await createBranch(octokit, ctx, branch, fromBranch)
+  return true
+}
+
+export async function updatePullRequest(
+  octokit: Octokit,
+  ctx: RepoContext,
+  pullNumber: number,
+  options: { title: string; body: string },
+): Promise<void> {
+  await octokit.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
+    owner: ctx.owner,
+    repo: ctx.repo,
+    pull_number: pullNumber,
+    title: options.title,
+    body: options.body,
+  })
+}
+
 export type PullRequestView = {
   number: number
   title: string
   body: string
   headSha: string
   baseBranch: string
+  /** GitHub's own view: clean, behind, blocked, dirty, unstable, unknown. */
+  mergeableState: string
   files: { path: string; patch: string | null }[]
 }
 
@@ -143,8 +230,55 @@ export async function pullRequestView(
     body: pr.body ?? '',
     headSha: pr.head.sha,
     baseBranch: pr.base.ref,
+    mergeableState: pr.mergeable_state ?? 'unknown',
     files: files.map((file) => ({ path: file.filename, patch: file.patch ?? null })),
   }
+}
+
+/**
+ * Ask GitHub to bring a pull request's branch up to date with its base.
+ *
+ * Branch protection on this repository is strict: a pull request must be level
+ * with main before it can merge. Since the crew pushes to main, an open pull
+ * request falls behind simply by waiting. GitHub then refuses the merge with
+ * "N of N required status checks are expected", because the required checks have
+ * not run against the updated branch.
+ *
+ * This creates a merge commit on the branch, which dismisses any stale review.
+ * The reviewer wakes on the push and approves again, and the next pass merges.
+ */
+export async function updatePullRequestBranch(
+  octokit: Octokit,
+  ctx: RepoContext,
+  pullNumber: number,
+): Promise<void> {
+  await octokit.request('PUT /repos/{owner}/{repo}/pulls/{pull_number}/update-branch', {
+    owner: ctx.owner,
+    repo: ctx.repo,
+    pull_number: pullNumber,
+  })
+}
+
+/**
+ * How many commits the base has that the head does not.
+ *
+ * The pull request's own `mergeable_state` is not usable for this: it reported
+ * `clean` for a branch that was three commits behind main, so the merge was
+ * refused on protection grounds while the field said everything was fine.
+ * Comparing the branches is deterministic.
+ */
+export async function branchBehindBy(
+  octokit: Octokit,
+  ctx: RepoContext,
+  base: string,
+  head: string,
+): Promise<number> {
+  const { data } = await octokit.request('GET /repos/{owner}/{repo}/compare/{basehead}', {
+    owner: ctx.owner,
+    repo: ctx.repo,
+    basehead: `${base}...${head}`,
+  })
+  return data.behind_by
 }
 
 export function diffText(view: PullRequestView, limit = 12000): string {
@@ -176,6 +310,8 @@ export type CheckRun = {
   name: string
   conclusion: string | null
   status: string
+  /** When this run started. A commit can carry several runs of the same name. */
+  startedAt: string
 }
 
 export async function listCheckRuns(
@@ -193,6 +329,7 @@ export async function listCheckRuns(
     name: run.name,
     conclusion: run.conclusion,
     status: run.status,
+    startedAt: run.started_at ?? '',
   }))
 }
 

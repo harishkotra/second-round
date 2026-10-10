@@ -10,10 +10,13 @@
 import type { Octokit } from 'octokit'
 import { isEntry, type RepoContext } from '../bot/github.js'
 import {
+  branchBehindBy,
   listCheckRuns,
+  listOpenPullRequests,
   listReviews,
   mergePullRequest,
   pullRequestView,
+  updatePullRequestBranch,
   type CheckRun,
   type PullRequestView,
   type Review,
@@ -49,8 +52,28 @@ export function latestReviewPerAuthor(reviews: Review[]): Review[] {
   return [...latest.values()]
 }
 
+/**
+ * The newest run of each check name.
+ *
+ * One commit can carry several runs of the same name: a concurrency group
+ * cancels the first attempt and a later attempt succeeds. Keying by name alone
+ * takes whichever the API happened to return last, which is how PR #32 came to
+ * be refused with `check-not-green:lint:cancelled` while its lint had in fact
+ * passed. GitHub judges the most recent run, so this does too.
+ */
+export function latestCheckPerName(checks: CheckRun[]): Map<string, CheckRun> {
+  const latest = new Map<string, CheckRun>()
+  for (const check of checks) {
+    const existing = latest.get(check.name)
+    if (existing === undefined || check.startedAt > existing.startedAt) {
+      latest.set(check.name, check)
+    }
+  }
+  return latest
+}
+
 export function canMerge(state: MergeState): MergeDecision {
-  const byName = new Map(state.checks.map((check) => [check.name, check]))
+  const byName = latestCheckPerName(state.checks)
 
   for (const required of REQUIRED_CHECKS) {
     const check = byName.get(required)
@@ -81,9 +104,18 @@ export function humanApproved(reviews: Review[]): boolean {
   )
 }
 
-export async function pullNumberFromEnv(env: NodeJS.ProcessEnv = process.env): Promise<number> {
+/**
+ * The pull request to attempt, or null to sweep.
+ *
+ * A blank PR_NUMBER means "look around and merge whatever is ready", which is
+ * what the scheduled run does. The sweep exists because this bot used to have
+ * exactly one trigger, `check_suite`, and GitHub documents that a check suite
+ * created by GitHub Actions never fires a workflow. The trigger could not work,
+ * so PR #32 sat green and approved and unmerged with nothing to collect it.
+ */
+export function pullNumberFromEnv(env: NodeJS.ProcessEnv = process.env): number | null {
   const raw = env['PR_NUMBER']
-  if (raw === undefined || raw.trim() === '') throw new Error('PR_NUMBER is not set')
+  if (raw === undefined || raw.trim() === '') return null
   const parsed = Number(raw)
   if (!Number.isInteger(parsed) || parsed <= 0) {
     throw new Error(`PR_NUMBER must be a positive integer, got "${raw}"`)
@@ -115,17 +147,66 @@ export async function gatherState(
   }
 }
 
-export async function handler(
+export const BOT_BRANCH_PREFIX = 'bot/'
+
+/**
+ * The open pull requests this bot is allowed to consider: the ones the crew
+ * opened. A human's pull request is not the crew's to merge.
+ */
+export async function sweepTargets(octokit: Octokit, ctx: RepoContext): Promise<number[]> {
+  const open = await listOpenPullRequests(octokit, ctx)
+  return open
+    .filter((pull) => pull.headRef.startsWith(BOT_BRANCH_PREFIX))
+    .map((pull) => pull.number)
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function blockedEvent(
+  requirementId: string | null,
+  pullNumber: number,
+  reason: string,
+): LedgerEvent {
+  return makeEvent({
+    bot: SLUG,
+    action: 'pr.reviewed',
+    req: requirementId,
+    artifact: String(pullNumber),
+    verdict: 'blocked',
+    reason,
+  })
+}
+
+/**
+ * A sweep runs every half hour. Recording the same failure every time would bury
+ * the record, so a reason already recorded against this pull request is not
+ * repeated. A *different* reason is recorded, because that is news.
+ */
+function isRepeat(history: LedgerEvent[], artifact: string, reason: string): boolean {
+  const previous = [...history].reverse().find((event) => event.artifact === artifact)
+  return previous !== undefined && previous.reason === reason
+}
+
+async function attemptMerge(
   run: BotRun,
-  deps: TurnstileDeps = {},
+  pullNumber: number,
+  validIds: Set<string>,
+  explicit: boolean,
 ): Promise<LedgerEvent[]> {
-  const pullNumber = deps.pullNumber ?? (await pullNumberFromEnv())
-  const { state, view } = await gatherState(run.octokit, run.repo, pullNumber)
+  let gathered: { state: MergeState; view: PullRequestView }
+  try {
+    gathered = await gatherState(run.octokit, run.repo, pullNumber)
+  } catch (error) {
+    const reason = `unreadable: ${messageOf(error)}`
+    run.log(`cannot read #${pullNumber}: ${reason}`)
+    if (!explicit && isRepeat(run.history, String(pullNumber), reason)) return []
+    return [blockedEvent(null, pullNumber, reason)]
+  }
 
-  const requirements = await loadRequirements()
-  const validIds = new Set(requirements.map((item) => item.id))
+  const { state, view } = gathered
   const requirementId = requirementIdIn(view.body, validIds)
-
   const decision = canMerge(state)
 
   if (run.dryRun) {
@@ -135,19 +216,50 @@ export async function handler(
 
   if (!decision.ok) {
     run.log(`refusing #${pullNumber}: ${decision.reason}`)
+    // A sweep passes over everything every half hour, so it only speaks when it
+    // acts. An explicitly named pull request always records its reason.
+    if (!explicit) return []
+    return [blockedEvent(requirementId, pullNumber, decision.reason)]
+  }
+
+  // Branch protection here is strict, so a pull request must be level with main
+  // before it can merge. The crew pushes to main, so an open pull request falls
+  // behind just by waiting, and GitHub then refuses with "N of N required status
+  // checks are expected". Bring the branch up to date and merge on the next pass:
+  // the push wakes the reviewer, and the workflow_run trigger wakes this bot.
+  const behind = await branchBehindBy(run.octokit, run.repo, view.baseBranch, view.headSha)
+  if (behind > 0) {
+    if (run.dryRun) {
+      run.log(`dry run, would bring #${pullNumber} up to date with ${view.baseBranch} (${behind} behind)`)
+      return []
+    }
+    await updatePullRequestBranch(run.octokit, run.repo, pullNumber)
+    run.log(`#${pullNumber} was ${behind} behind ${view.baseBranch}; updated the branch, will merge next pass`)
     return [
       makeEvent({
         bot: SLUG,
-        action: 'pr.reviewed',
+        action: 'pr.updated',
         req: requirementId,
         artifact: String(pullNumber),
-        verdict: 'blocked',
-        reason: decision.reason,
+        reason: `branch-behind:${behind}`,
       }),
     ]
   }
 
-  const sha = await mergePullRequest(run.octokit, run.repo, pullNumber)
+  let sha: string
+  try {
+    sha = await mergePullRequest(run.octokit, run.repo, pullNumber)
+  } catch (error) {
+    // The merge is the one thing this bot exists to do. Returning quietly here is
+    // how a real failure hid for two whole runs: a green run, an empty ledger,
+    // and a pull request that stayed open with nobody told why. Say it in the
+    // record instead.
+    const reason = `merge-failed: ${messageOf(error)}`
+    run.log(`merge failed for #${pullNumber}: ${reason}`)
+    if (!explicit && isRepeat(run.history, String(pullNumber), reason)) return []
+    return [blockedEvent(requirementId, pullNumber, reason)]
+  }
+
   run.log(`merged #${pullNumber} as ${sha.slice(0, 7)}`)
 
   return [
@@ -158,6 +270,28 @@ export async function handler(
       artifact: String(pullNumber),
     }),
   ]
+}
+
+export async function handler(
+  run: BotRun,
+  deps: TurnstileDeps = {},
+): Promise<LedgerEvent[]> {
+  const requirements = await loadRequirements()
+  const validIds = new Set(requirements.map((item) => item.id))
+
+  const single = deps.pullNumber ?? pullNumberFromEnv()
+  const targets = single === null ? await sweepTargets(run.octokit, run.repo) : [single]
+
+  if (targets.length === 0) {
+    run.log('nothing to merge')
+    return []
+  }
+
+  const events: LedgerEvent[] = []
+  for (const pullNumber of targets) {
+    events.push(...(await attemptMerge(run, pullNumber, validIds, single !== null)))
+  }
+  return events
 }
 
 if (isEntry(process.argv[1] ?? '', 'turnstile')) {

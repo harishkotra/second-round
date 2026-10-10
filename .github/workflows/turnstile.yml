@@ -2,15 +2,28 @@ name: Turnstile
 
 # The only identity permitted to merge (C-007).
 # Deterministic gates first. It has no opinions, only checks.
+#
+# The trigger is workflow_run, NOT check_suite. GitHub documents that a
+# check_suite event never fires a workflow when the check suite was created by
+# GitHub Actions, and CI is GitHub Actions. The previous trigger could therefore
+# never fire: PR #32 sat green, approved and mergeable with nothing to collect
+# it. See docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows
+#
+# The schedule is the safety net. It sweeps every open crew pull request and
+# merges whatever is ready, so a missed event can never strand a green pull
+# request again. A sweep only records to the ledger when it actually merges.
 
 on:
-  check_suite:
+  workflow_run:
+    workflows: ["CI"]
     types: [completed]
+  schedule:
+    - cron: '*/30 * * * *'
   workflow_dispatch:
     inputs:
       pr:
-        description: 'Pull request number to attempt to merge'
-        required: true
+        description: 'Pull request number to attempt (blank sweeps every open crew pull request)'
+        required: false
         type: string
 
 concurrency:
@@ -22,6 +35,9 @@ permissions:
 
 jobs:
   turnstile:
+    # Wake only when CI actually passed. A failing CI run has nothing to merge,
+    # and running anyway would only produce a refusal nobody asked for.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,27 +50,32 @@ jobs:
       - run: npm ci
       - run: npm run build
 
-      # A check suite can complete without a pull request attached, for example
-      # when Foreman runs. Resolve the number first and skip cleanly if absent.
+      # Resolve a pull request number when there is one. An empty result means
+      # sweep, which is what the scheduled run wants. A workflow_run that has no
+      # pull request attached (a push to main) also lands here, and the sweep
+      # then finds the real work.
       - name: Resolve pull request number
         id: pr
         run: |
-          from_suite="${{ github.event.check_suite.pull_requests[0].number }}"
-          if [ -n "$from_suite" ]; then
-            echo "number=$from_suite" >> "$GITHUB_OUTPUT"
+          from_run="${{ github.event.workflow_run.pull_requests[0].number }}"
+          if [ -n "$from_run" ]; then
+            echo "number=$from_run" >> "$GITHUB_OUTPUT"
           else
             echo "number=${{ inputs.pr }}" >> "$GITHUB_OUTPUT"
           fi
 
+      # Request exactly what merging needs, so a missing App permission fails
+      # here, loudly, instead of surfacing later as a silent refusal to merge.
       - uses: actions/create-github-app-token@v3
-        if: steps.pr.outputs.number != ''
         id: token
         with:
           client-id: ${{ vars.APP_SR_TURNSTILE_CLIENT_ID }}
           private-key: ${{ secrets.APP_SR_TURNSTILE_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-checks: read
 
       - name: Run Turnstile
-        if: steps.pr.outputs.number != ''
         run: node dist/src/bots/turnstile.js
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}

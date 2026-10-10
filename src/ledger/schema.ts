@@ -14,6 +14,7 @@ export const ACTIONS = [
   'issue.claimed',
   'issue.responded',
   'pr.opened',
+  'pr.updated',
   'pr.reviewed',
   'pr.merged',
   'pr.human_approved',
