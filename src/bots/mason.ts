@@ -14,12 +14,15 @@ import { parsePatch, type FileChange } from '../bot/patch.js'
 import {
   branchName,
   commitFiles,
-  createBranch,
   defaultBranch,
+  ensureBranch,
+  findOpenPullRequest,
   listRepoPaths,
   openPullRequest,
+  updatePullRequest,
 } from '../bot/repo.js'
 import { runBot, type BotRun } from '../bot/run.js'
+import { verifyLocally, type CheckResult } from '../bot/verify.js'
 import { makeEvent, type LedgerEvent } from '../ledger/schema.js'
 import { loadRequirements, type Requirement } from '../spec/load.js'
 import { requirementIdIn, referencedRequirementIds } from '../spec/reference.js'
@@ -45,8 +48,9 @@ export function buildPrBody(
   requirement: Requirement,
   issueNumber: number,
   notes: string,
+  selfCheck?: CheckResult,
 ): string {
-  return [
+  const parts = [
     '## What this does',
     '',
     requirement.text,
@@ -54,10 +58,28 @@ export function buildPrBody(
     '## Notes from the builder',
     '',
     notes.trim() === '' ? 'Nothing to flag.' : notes.trim(),
-    '',
-    `Closes ${requirement.id}`,
-    `Resolves #${issueNumber}`,
-  ].join('\n')
+  ]
+
+  if (selfCheck !== undefined) {
+    parts.push(
+      '',
+      '## Self-check',
+      '',
+      selfCheck.ok
+        ? 'Typecheck and tests both passed locally before this pull request was opened.'
+        : [
+            'These gates failed locally, and the pull request was opened anyway so the',
+            'failure is visible rather than hidden:',
+            '',
+            '```',
+            selfCheck.output.slice(0, 2000),
+            '```',
+          ].join('\n'),
+    )
+  }
+
+  parts.push('', `Closes ${requirement.id}`, `Resolves #${issueNumber}`)
+  return parts.join('\n')
 }
 
 export function planImplementation(
@@ -136,6 +158,35 @@ export function buildPrompt(
   return parts.join('\n')
 }
 
+/** One repair attempt. More than one and the cost stops being predictable. */
+export const MAX_REPAIRS = 1
+
+/**
+ * The second prompt: the same requirement, plus the gates that just failed.
+ * The model is told not to explain, because a repair pass is not a conversation,
+ * and an apology costs tokens while changing nothing.
+ */
+export function buildRepairPrompt(
+  requirement: Requirement,
+  files: FileChange[],
+  failure: string,
+): string {
+  return [
+    `Your attempt at ${requirement.id} did not pass its own checks.`,
+    '',
+    'The files you wrote:',
+    files.map((file) => `- ${file.path}`).join('\n'),
+    '',
+    'What failed:',
+    failure,
+    '',
+    'Return the FULL corrected contents of every file you changed, in the same shape:',
+    '{"files":[{"path":"src/...","content":"<full file contents>"}],"notes":"<...>"}',
+    '',
+    'Do not explain. Do not apologise. Do not return a diff.',
+  ].join('\n')
+}
+
 export async function issueNumberFromEnv(env: NodeJS.ProcessEnv = process.env): Promise<number> {
   const raw = env['ISSUE_NUMBER']
   if (raw === undefined || raw.trim() === '') {
@@ -171,6 +222,7 @@ export type MasonDeps = {
   issueNumber?: number
   conventions?: string
   context?: string
+  verify?: (files: FileChange[]) => Promise<CheckResult>
 }
 
 export async function handler(
@@ -207,24 +259,61 @@ export async function handler(
     return []
   }
 
-  const result = await deps.generate({
+  let result = await deps.generate({
     persona: run.persona,
     messages: [{ role: 'user', content: prompt }],
     model: MODEL,
   })
+  let cost = result.costUsd
+  let plan = planImplementation(requirement, issueNumber, result.text, readNotes(result.text))
 
-  const plan = planImplementation(requirement, issueNumber, result.text, readNotes(result.text))
+  // Check its own homework before asking for review. A public CI failure is a
+  // worse first feedback than a private one.
+  const check = deps.verify ?? ((files: FileChange[]): Promise<CheckResult> => verifyLocally(files))
+  let selfCheck = await check(plan.files)
 
-  await createBranch(run.octokit, run.repo, plan.branch, base)
+  for (let attempt = 0; !selfCheck.ok && attempt < MAX_REPAIRS; attempt += 1) {
+    run.log(`self-check failed, asking for a repair (${attempt + 1}/${MAX_REPAIRS})`)
+    result = await deps.generate({
+      persona: run.persona,
+      messages: [
+        { role: 'user', content: buildRepairPrompt(requirement, plan.files, selfCheck.output) },
+      ],
+      model: MODEL,
+    })
+    cost += result.costUsd
+    plan = planImplementation(requirement, issueNumber, result.text, readNotes(result.text))
+    selfCheck = await check(plan.files)
+  }
+
+  plan = { ...plan, body: buildPrBody(requirement, issueNumber, plan.notes, selfCheck) }
+
+  // One requirement, one pull request: a retry updates what is already open
+  // rather than opening another one beside it.
+  const existing = await findOpenPullRequest(run.octokit, run.repo, plan.branch)
+  await ensureBranch(run.octokit, run.repo, plan.branch, base)
   await commitFiles(run.octokit, run.repo, plan.branch, plan.files, `${requirement.id}`)
-  const pullNumber = await openPullRequest(run.octokit, run.repo, {
-    head: plan.branch,
-    base,
-    title: plan.title,
-    body: plan.body,
-  })
 
-  run.log(`opened #${pullNumber} on ${plan.branch} (${plan.files.length} file(s), $${result.costUsd.toFixed(4)})`)
+  let pullNumber: number
+  let action: 'pr.opened' | 'pr.updated'
+  if (existing === null) {
+    pullNumber = await openPullRequest(run.octokit, run.repo, {
+      head: plan.branch,
+      base,
+      title: plan.title,
+      body: plan.body,
+    })
+    action = 'pr.opened'
+  } else {
+    await updatePullRequest(run.octokit, run.repo, existing, { title: plan.title, body: plan.body })
+    pullNumber = existing
+    action = 'pr.updated'
+  }
+
+  run.log(
+    `${action === 'pr.opened' ? 'opened' : 'updated'} #${pullNumber} on ${plan.branch}` +
+      ` (${plan.files.length} file(s), self-check ${selfCheck.ok ? 'passed' : 'failed'}, $${cost.toFixed(4)})`,
+  )
 
   return [
     makeEvent({
@@ -232,11 +321,11 @@ export async function handler(
       action: 'issue.claimed',
       req: requirement.id,
       artifact: String(issueNumber),
-      costUsd: result.costUsd,
+      costUsd: cost,
     }),
     makeEvent({
       bot: SLUG,
-      action: 'pr.opened',
+      action,
       req: requirement.id,
       artifact: String(pullNumber),
       costUsd: 0,

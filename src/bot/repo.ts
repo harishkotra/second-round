@@ -112,6 +112,75 @@ export async function openPullRequest(
   return data.number
 }
 
+function statusOf(error: unknown): number | null {
+  if (typeof error === 'object' && error !== null && 'status' in error) {
+    const status = (error as { status?: unknown }).status
+    if (typeof status === 'number') return status
+  }
+  return null
+}
+
+/**
+ * The open pull request whose head is `branch`, or null.
+ *
+ * This exists so a second attempt at a requirement updates the pull request that
+ * already exists instead of opening another one beside it. Without it, every
+ * retry produces a new pull request for the same requirement, and the review
+ * history for that requirement is scattered across all of them.
+ */
+export async function findOpenPullRequest(
+  octokit: Octokit,
+  ctx: RepoContext,
+  branch: string,
+): Promise<number | null> {
+  const { data } = await octokit.request('GET /repos/{owner}/{repo}/pulls', {
+    owner: ctx.owner,
+    repo: ctx.repo,
+    head: `${ctx.owner}:${branch}`,
+    state: 'open',
+    per_page: 100,
+  })
+  const first: (typeof data)[number] | undefined = data[0]
+  return first === undefined ? null : first.number
+}
+
+/** Creates the branch only when it is missing, so a retry can reuse it. */
+export async function ensureBranch(
+  octokit: Octokit,
+  ctx: RepoContext,
+  branch: string,
+  fromBranch: string,
+): Promise<boolean> {
+  try {
+    await octokit.request('GET /repos/{owner}/{repo}/branches/{branch}', {
+      owner: ctx.owner,
+      repo: ctx.repo,
+      branch,
+    })
+    return false
+  } catch (error) {
+    if (statusOf(error) !== 404) throw error
+  }
+
+  await createBranch(octokit, ctx, branch, fromBranch)
+  return true
+}
+
+export async function updatePullRequest(
+  octokit: Octokit,
+  ctx: RepoContext,
+  pullNumber: number,
+  options: { title: string; body: string },
+): Promise<void> {
+  await octokit.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
+    owner: ctx.owner,
+    repo: ctx.repo,
+    pull_number: pullNumber,
+    title: options.title,
+    body: options.body,
+  })
+}
+
 export type PullRequestView = {
   number: number
   title: string
