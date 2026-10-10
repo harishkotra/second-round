@@ -1,102 +1,62 @@
 import { describe, expect, it } from 'vitest'
-import { htmlToText, isJobUrl, loadJobDescription, parseJobInput } from '../../src/job/input.js'
-
-type FakeResponse = {
-  ok: boolean
-  status: number
-  text: () => Promise<string>
-}
-
-function fetchReturning(body: string, status = 200): typeof fetch {
-  const response: FakeResponse = {
-    ok: status >= 200 && status < 300,
-    status,
-    text: () => Promise.resolve(body),
-  }
-  return (() => Promise.resolve(response)) as unknown as typeof fetch
-}
+import { acceptJobDescription, isJobUrl } from '../../src/job/input.js'
 
 describe('isJobUrl', () => {
-  it('accepts a bare http or https URL', () => {
+  it('recognises http and https URLs', () => {
     expect(isJobUrl('https://example.com/jobs/1')).toBe(true)
     expect(isJobUrl('http://example.com/jobs/1')).toBe(true)
   })
 
-  it('rejects pasted text that merely mentions a link', () => {
-    expect(isJobUrl('Apply at https://example.com/jobs/1 today')).toBe(false)
+  it('ignores surrounding whitespace', () => {
+    expect(isJobUrl('  https://example.com/jobs/1\n')).toBe(true)
   })
 
-  it('rejects schemes that are not http or https', () => {
-    expect(isJobUrl('ftp://example.com/jobs/1')).toBe(false)
-    expect(isJobUrl('mailto:jobs@example.com')).toBe(false)
+  it('does not treat prose as a URL', () => {
+    expect(isJobUrl('We are hiring a backend engineer.')).toBe(false)
+  })
+
+  it('does not treat a bare host as a URL', () => {
+    expect(isJobUrl('example.com/jobs/1')).toBe(false)
   })
 })
 
-describe('parseJobInput', () => {
-  it('reads a bare URL as a url source', () => {
-    expect(parseJobInput('  https://example.com/jobs/1  ')).toEqual({
+describe('acceptJobDescription', () => {
+  it('accepts a pasted description', () => {
+    const text = 'Senior Engineer\n\nWe build things.'
+    expect(acceptJobDescription(text)).toEqual({ kind: 'pasted', text })
+  })
+
+  it('trims a pasted description', () => {
+    expect(acceptJobDescription('  hello  ')).toEqual({ kind: 'pasted', text: 'hello' })
+  })
+
+  it('accepts a job description URL', () => {
+    expect(acceptJobDescription('https://example.com/jobs/1')).toEqual({
       kind: 'url',
       url: 'https://example.com/jobs/1',
     })
   })
 
-  it('reads pasted text as a text source, trimmed', () => {
-    expect(parseJobInput('\n  Senior Engineer\n  Build things  \n')).toEqual({
-      kind: 'text',
-      text: 'Senior Engineer\n  Build things',
+  it('keeps the path and query of a URL', () => {
+    expect(acceptJobDescription('https://example.com/jobs/1?ref=abc')).toEqual({
+      kind: 'url',
+      url: 'https://example.com/jobs/1?ref=abc',
     })
   })
 
-  it('refuses empty input rather than guessing', () => {
-    expect(() => parseJobInput('   ')).toThrow(/empty/)
-  })
-})
-
-describe('htmlToText', () => {
-  it('drops tags, scripts and styles, and collapses whitespace', () => {
-    const html =
-      '<html><head><style>p{color:red}</style></head>' +
-      '<body><h1>Role</h1><p>Build &amp; ship</p><script>var x = 1</script></body></html>'
-    expect(htmlToText(html)).toBe('Role Build & ship')
-  })
-
-  it('decodes numeric entities', () => {
-    expect(htmlToText('<p>caf&#233; &#x2014; bar</p>')).toBe('café — bar')
-  })
-
-  it('leaves an unknown entity alone', () => {
-    expect(htmlToText('<p>&notreal;</p>')).toBe('&notreal;')
-  })
-})
-
-describe('loadJobDescription', () => {
-  it('returns pasted text without touching the network', async () => {
-    const result = await loadJobDescription('  Senior Engineer  ')
-    expect(result.source).toEqual({ kind: 'text', text: 'Senior Engineer' })
-    expect(result.text).toBe('Senior Engineer')
-  })
-
-  it('fetches a URL and reduces the page to readable text', async () => {
-    const result = await loadJobDescription('https://example.com/jobs/1', {
-      fetchImpl: fetchReturning(
-        '<html><body><h1>Staff Engineer</h1><p>Own the roadmap.</p></body></html>',
-      ),
+  it('normalises a URL', () => {
+    expect(acceptJobDescription('HTTPS://Example.com')).toEqual({
+      kind: 'url',
+      url: 'https://example.com/',
     })
-    expect(result.source).toEqual({ kind: 'url', url: 'https://example.com/jobs/1' })
-    expect(result.text).toBe('Staff Engineer Own the roadmap.')
   })
 
-  it('fails loudly when the page cannot be fetched', async () => {
-    await expect(
-      loadJobDescription('https://example.com/jobs/1', { fetchImpl: fetchReturning('gone', 404) }),
-    ).rejects.toThrow(/HTTP 404/)
+  it('treats a description that mentions a URL as pasted text', () => {
+    const text = 'Apply at https://example.com/jobs/1 if interested.'
+    expect(acceptJobDescription(text)).toEqual({ kind: 'pasted', text })
   })
 
-  it('fails loudly when the page has no readable text', async () => {
-    await expect(
-      loadJobDescription('https://example.com/jobs/1', {
-        fetchImpl: fetchReturning('<script>var x = 1</script>'),
-      }),
-    ).rejects.toThrow(/no readable text/)
+  it('rejects empty input', () => {
+    expect(() => acceptJobDescription('   ')).toThrow(/required/)
   })
 })
