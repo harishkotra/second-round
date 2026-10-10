@@ -7,3 +7,8 @@ coverage/
 !.env.example
 *.pem
 .vercel/
+
+# Generated from the ledger and published to the `dashboard` branch. They must
+# never be committed to main, which is protected and should stay hand-authored.
+DASHBOARD.md
+CHANGELOG.md

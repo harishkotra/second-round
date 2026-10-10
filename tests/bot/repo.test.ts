@@ -1,14 +1,12 @@
 import { describe, expect, test } from 'vitest'
+import { findOpenPullRequest, listOpenPullRequests, updatePullRequest } from '../../src/bot/pulls.js'
 import {
   branchBehindBy,
   branchName,
   diffText,
   ensureBranch,
-  findOpenPullRequest,
   listCheckRuns,
-  listOpenPullRequests,
   slugify,
-  updatePullRequest,
   updatePullRequestBranch,
   type PullRequestView,
 } from '../../src/bot/repo.js'
@@ -140,13 +138,13 @@ describe('listOpenPullRequests', () => {
   test('returns every open pull request with its head branch', async () => {
     const fake = fakeOctokit({
       [GET_PULLS]: () => [
-        { number: 1, head: { ref: 'bot/R-001/a' } },
-        { number: 2, head: { ref: 'feature/human-work' } },
+        { number: 1, title: '[R-001] a', head: { ref: 'bot/R-001/a' } },
+        { number: 2, title: 'a human change', head: { ref: 'feature/human-work' } },
       ],
     })
     expect(await listOpenPullRequests(asOctokit(fake), ctx)).toEqual([
-      { number: 1, headRef: 'bot/R-001/a' },
-      { number: 2, headRef: 'feature/human-work' },
+      { number: 1, title: '[R-001] a', headRef: 'bot/R-001/a' },
+      { number: 2, title: 'a human change', headRef: 'feature/human-work' },
     ])
     expect(fake.calls[0]?.params['state']).toBe('open')
   })

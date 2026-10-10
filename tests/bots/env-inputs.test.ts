@@ -4,24 +4,21 @@ import { pullNumberFromEnv as sentryPullNumber } from '../../src/bots/sentry.js'
 import { pullNumberFromEnv as turnstilePullNumber } from '../../src/bots/turnstile.js'
 
 describe('issueNumberFromEnv', () => {
-  test('reads a positive integer', async () => {
-    expect(await issueNumberFromEnv({ ISSUE_NUMBER: '42' })).toBe(42)
+  test('reads a positive integer', () => {
+    expect(issueNumberFromEnv({ ISSUE_NUMBER: '42' })).toBe(42)
   })
 
-  test('throws when unset rather than guessing', async () => {
-    await expect(issueNumberFromEnv({})).rejects.toThrow(/ISSUE_NUMBER is not set/)
+  test('null when unset, which means take the next ready issue', () => {
+    expect(issueNumberFromEnv({})).toBeNull()
+    expect(issueNumberFromEnv({ ISSUE_NUMBER: '   ' })).toBeNull()
   })
 
-  test('throws on a blank value', async () => {
-    await expect(issueNumberFromEnv({ ISSUE_NUMBER: '   ' })).rejects.toThrow(/is not set/)
+  test('throws on a non-integer rather than quietly picking its own work', () => {
+    expect(() => issueNumberFromEnv({ ISSUE_NUMBER: 'abc' })).toThrow(/positive integer/)
   })
 
-  test('throws on a non-integer', async () => {
-    await expect(issueNumberFromEnv({ ISSUE_NUMBER: 'abc' })).rejects.toThrow(/positive integer/)
-  })
-
-  test('throws on zero', async () => {
-    await expect(issueNumberFromEnv({ ISSUE_NUMBER: '0' })).rejects.toThrow(/positive integer/)
+  test('throws on zero', () => {
+    expect(() => issueNumberFromEnv({ ISSUE_NUMBER: '0' })).toThrow(/positive integer/)
   })
 })
 

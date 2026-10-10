@@ -7,22 +7,23 @@
  */
 
 import type { Octokit } from 'octokit'
+import { releaseClaim } from '../bot/claim.js'
 import { readConventions, readRepoContext } from '../bot/context.js'
 import { isEntry, type RepoContext } from '../bot/github.js'
+import { readRemoteLedger } from '../bot/ledger-remote.js'
 import { callModel } from '../bot/model.js'
 import { parsePatch, type FileChange } from '../bot/patch.js'
+import { findOpenPullRequest, openPullRequest, updatePullRequest } from '../bot/pulls.js'
 import {
   branchName,
   commitFiles,
   defaultBranch,
   ensureBranch,
-  findOpenPullRequest,
   listRepoPaths,
-  openPullRequest,
-  updatePullRequest,
 } from '../bot/repo.js'
 import { runBot, type BotRun } from '../bot/run.js'
 import { verifyLocally, type CheckResult } from '../bot/verify.js'
+import { deliveredRequirements, nextClaimable, peekNext } from '../bot/work.js'
 import { makeEvent, type LedgerEvent } from '../ledger/schema.js'
 import { loadRequirements, type Requirement } from '../spec/load.js'
 import { requirementIdIn, referencedRequirementIds } from '../spec/reference.js'
@@ -187,11 +188,16 @@ export function buildRepairPrompt(
   ].join('\n')
 }
 
-export async function issueNumberFromEnv(env: NodeJS.ProcessEnv = process.env): Promise<number> {
+/**
+ * The issue to build, or null to pick one off the queue.
+ *
+ * A blank ISSUE_NUMBER means "find the next ready requirement and take it",
+ * which is what the scheduled run does. That is the difference between a tool
+ * someone points at a task and an agent that works through a backlog.
+ */
+export function issueNumberFromEnv(env: NodeJS.ProcessEnv = process.env): number | null {
   const raw = env['ISSUE_NUMBER']
-  if (raw === undefined || raw.trim() === '') {
-    throw new Error('ISSUE_NUMBER is not set')
-  }
+  if (raw === undefined || raw.trim() === '') return null
   const parsed = Number(raw)
   if (!Number.isInteger(parsed) || parsed <= 0) {
     throw new Error(`ISSUE_NUMBER must be a positive integer, got "${raw}"`)
@@ -229,12 +235,44 @@ export async function handler(
   run: BotRun,
   deps: MasonDeps = { generate: callModel },
 ): Promise<LedgerEvent[]> {
-  const issueNumber = deps.issueNumber ?? (await issueNumberFromEnv())
+  const requested = deps.issueNumber ?? issueNumberFromEnv()
+
+  // What already reached main, so the crew never rebuilds something it shipped.
+  const delivered = deliveredRequirements(
+    await readRemoteLedger(run.octokit, run.repo, 'sr-turnstile'),
+  )
+
+  // A dry run must not take a lease: it would hold work it never does.
+  if (requested === null && run.dryRun) {
+    const next = await peekNext(run.octokit, run.repo, SLUG, delivered)
+    run.log(
+      next === null
+        ? 'dry run, nothing ready to build'
+        : `dry run, would claim #${next.number} ${next.title}`,
+    )
+    return []
+  }
+
+  const issueNumber =
+    requested ?? (await nextClaimable(run.octokit, run.repo, SLUG, delivered))
+  if (issueNumber === null) {
+    run.log('nothing ready to build')
+    return []
+  }
+
+  // A lease this run took itself is given back if the issue turns out to be
+  // unusable, so it does not sit held by a bot that cannot build it.
+  const takenBySelf = requested === null
+  const release = async (): Promise<void> => {
+    if (takenBySelf) await releaseClaim(run.octokit, run.repo, issueNumber, SLUG)
+  }
+
   const issue = await fetchIssue(run.octokit, run.repo, issueNumber)
 
   const requirementId = issueRequirementId(issue.title, issue.body)
   if (requirementId === null) {
     run.log(`issue #${issueNumber} names no requirement, refusing to build it`)
+    await release()
     return []
   }
 
@@ -242,6 +280,7 @@ export async function handler(
   const requirement = requirements.find((item) => item.id === requirementId)
   if (requirement === undefined) {
     run.log(`issue #${issueNumber} names ${requirementId}, which is not in the spec`)
+    await release()
     return []
   }
 

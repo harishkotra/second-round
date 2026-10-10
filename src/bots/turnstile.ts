@@ -9,10 +9,11 @@
 
 import type { Octokit } from 'octokit'
 import { isEntry, type RepoContext } from '../bot/github.js'
+import { readRemoteLedger } from '../bot/ledger-remote.js'
+import { closeIssue, listOpenPullRequests } from '../bot/pulls.js'
 import {
   branchBehindBy,
   listCheckRuns,
-  listOpenPullRequests,
   listReviews,
   mergePullRequest,
   pullRequestView,
@@ -189,6 +190,29 @@ function isRepeat(history: LedgerEvent[], artifact: string, reason: string): boo
   return previous !== undefined && previous.reason === reason
 }
 
+/**
+ * The issue the builder claimed for a requirement.
+ *
+ * The ledger is the coordination substrate here. The builder recorded which
+ * issue it took, so the merger reads that rather than guessing from the pull
+ * request body, and the queue stays honest about what is still owed.
+ */
+export async function issueFor(
+  octokit: Octokit,
+  ctx: RepoContext,
+  requirementId: string | null,
+): Promise<number | null> {
+  if (requirementId === null) return null
+
+  const events = await readRemoteLedger(octokit, ctx, 'sr-mason')
+  for (const event of [...events].reverse()) {
+    if (event.action !== 'issue.claimed' || event.req !== requirementId) continue
+    const parsed = Number(event.artifact)
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null
+  }
+  return null
+}
+
 async function attemptMerge(
   run: BotRun,
   pullNumber: number,
@@ -261,6 +285,20 @@ async function attemptMerge(
   }
 
   run.log(`merged #${pullNumber} as ${sha.slice(0, 7)}`)
+
+  // The queue must reflect what shipped, so close the issue explicitly rather
+  // than trusting GitHub's closing keywords to fire.
+  const issue = await issueFor(run.octokit, run.repo, requirementId)
+  if (issue !== null) {
+    try {
+      await closeIssue(run.octokit, run.repo, issue, `Delivered in #${pullNumber}.`)
+      run.log(`closed issue #${issue}`)
+    } catch (error) {
+      // The merge is the thing that matters and it already happened. Say so, do
+      // not fail the run over the bookkeeping.
+      run.log(`merged, but could not close issue #${issue}: ${messageOf(error)}`)
+    }
+  }
 
   return [
     makeEvent({

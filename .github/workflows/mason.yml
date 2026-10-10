@@ -1,16 +1,25 @@
 name: Mason
 
-# Implements one assigned requirement. Opens a branch and a pull request.
+# Implements the next ready requirement. Opens a branch and a pull request.
 # Never main, never a merge, never an approval.
+#
+# The schedule is what makes the crew autonomous rather than merely capable. It
+# finds the next issue labelled `ready` that no other builder holds, takes the
+# label lease, and builds it. `workflow_dispatch` with an issue number still
+# works when a specific requirement should be forced.
+#
+# There is deliberately no `issues: [assigned]` trigger. It was here and it could
+# never fire: GitHub Apps are not assignable, and Foreman only applies labels, so
+# the assignee it waited for was never going to exist.
 
 on:
-  issues:
-    types: [assigned]
+  schedule:
+    - cron: '*/30 * * * *'
   workflow_dispatch:
     inputs:
       issue:
-        description: 'Issue number to implement'
-        required: true
+        description: 'Issue number to implement (blank takes the next ready one)'
+        required: false
         type: string
 
 concurrency:
@@ -22,7 +31,6 @@ permissions:
 
 jobs:
   mason:
-    if: github.event_name == 'workflow_dispatch' || github.event.assignee.login == 'sr-mason[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -46,7 +54,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue }}
+          ISSUE_NUMBER: ${{ inputs.issue }}
           PARTICLE_API_KEY: ${{ secrets.PARTICLE_API_KEY }}
           PARTICLE_BASE_URL: ${{ vars.PARTICLE_BASE_URL }}
           BOT_DAILY_CAP_USD: '0.50'

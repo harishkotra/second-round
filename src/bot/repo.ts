@@ -96,68 +96,12 @@ export async function commitFiles(
   }
 }
 
-export async function openPullRequest(
-  octokit: Octokit,
-  ctx: RepoContext,
-  options: { head: string; base: string; title: string; body: string },
-): Promise<number> {
-  const { data } = await octokit.request('POST /repos/{owner}/{repo}/pulls', {
-    owner: ctx.owner,
-    repo: ctx.repo,
-    head: options.head,
-    base: options.base,
-    title: options.title,
-    body: options.body,
-  })
-  return data.number
-}
-
 function statusOf(error: unknown): number | null {
   if (typeof error === 'object' && error !== null && 'status' in error) {
     const status = (error as { status?: unknown }).status
     if (typeof status === 'number') return status
   }
   return null
-}
-
-/**
- * The open pull request whose head is `branch`, or null.
- *
- * This exists so a second attempt at a requirement updates the pull request that
- * already exists instead of opening another one beside it. Without it, every
- * retry produces a new pull request for the same requirement, and the review
- * history for that requirement is scattered across all of them.
- */
-export async function findOpenPullRequest(
-  octokit: Octokit,
-  ctx: RepoContext,
-  branch: string,
-): Promise<number | null> {
-  const { data } = await octokit.request('GET /repos/{owner}/{repo}/pulls', {
-    owner: ctx.owner,
-    repo: ctx.repo,
-    head: `${ctx.owner}:${branch}`,
-    state: 'open',
-    per_page: 100,
-  })
-  const first: (typeof data)[number] | undefined = data[0]
-  return first === undefined ? null : first.number
-}
-
-export type OpenPullRequest = { number: number; headRef: string }
-
-/** Every open pull request, so a merger can sweep rather than wait for an event. */
-export async function listOpenPullRequests(
-  octokit: Octokit,
-  ctx: RepoContext,
-): Promise<OpenPullRequest[]> {
-  const { data } = await octokit.request('GET /repos/{owner}/{repo}/pulls', {
-    owner: ctx.owner,
-    repo: ctx.repo,
-    state: 'open',
-    per_page: 100,
-  })
-  return data.map((pull) => ({ number: pull.number, headRef: pull.head.ref }))
 }
 
 /** Creates the branch only when it is missing, so a retry can reuse it. */
@@ -180,21 +124,6 @@ export async function ensureBranch(
 
   await createBranch(octokit, ctx, branch, fromBranch)
   return true
-}
-
-export async function updatePullRequest(
-  octokit: Octokit,
-  ctx: RepoContext,
-  pullNumber: number,
-  options: { title: string; body: string },
-): Promise<void> {
-  await octokit.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
-    owner: ctx.owner,
-    repo: ctx.repo,
-    pull_number: pullNumber,
-    title: options.title,
-    body: options.body,
-  })
 }
 
 export type PullRequestView = {

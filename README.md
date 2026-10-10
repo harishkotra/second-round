@@ -71,6 +71,18 @@ reviewing and then approve its own change, branch protection on `main` also sets
 `require_last_push_approval`, so an approval never covers a push the approver
 made itself.
 
+## Live dashboard
+
+Two files are regenerated from the ledger every fifteen minutes and on every
+successful CI run, and published to the `dashboard` branch:
+
+- **[DASHBOARD.md](https://github.com/harishkotra/second-round/blob/dashboard/DASHBOARD.md)** — who is doing what right now, what is in flight, what has shipped, and what it cost
+- **[CHANGELOG.md](https://github.com/harishkotra/second-round/blob/dashboard/CHANGELOG.md)** — what changed in the product, one entry per requirement that reached `main`
+
+They live on their own branch because `main` is protected and a generated file
+should not be able to bypass the gate. The same dashboard is printed into the
+run summary of the Dashboard workflow, so it is visible in the Actions tab too.
+
 ## Working on it
 
 ```bash
