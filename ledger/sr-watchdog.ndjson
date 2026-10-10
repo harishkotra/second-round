@@ -1,1 +1,2 @@
 {"ts":"2026-10-10T18:11:14.121Z","bot":"sr-watchdog","action":"stall.retried","req":null,"artifact":"sr-mason","costUsd":0,"verdict":null,"reason":"last run failure"}
+{"ts":"2026-10-10T21:43:10.152Z","bot":"sr-watchdog","action":"stall.escalated","req":null,"artifact":"sr-mason","costUsd":0,"verdict":null,"reason":"3 consecutive failures (issue #33)"}
