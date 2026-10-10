@@ -1,0 +1,63 @@
+name: Turnstile
+
+# The only identity permitted to merge (C-007).
+# Deterministic gates first. It has no opinions, only checks.
+
+on:
+  check_suite:
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: 'Pull request number to attempt to merge'
+        required: true
+        type: string
+
+concurrency:
+  group: bot-sr-turnstile
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  turnstile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      # A check suite can complete without a pull request attached, for example
+      # when Foreman runs. Resolve the number first and skip cleanly if absent.
+      - name: Resolve pull request number
+        id: pr
+        run: |
+          from_suite="${{ github.event.check_suite.pull_requests[0].number }}"
+          if [ -n "$from_suite" ]; then
+            echo "number=$from_suite" >> "$GITHUB_OUTPUT"
+          else
+            echo "number=${{ inputs.pr }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/create-github-app-token@v3
+        if: steps.pr.outputs.number != ''
+        id: token
+        with:
+          client-id: ${{ vars.APP_SR_TURNSTILE_CLIENT_ID }}
+          private-key: ${{ secrets.APP_SR_TURNSTILE_PRIVATE_KEY }}
+
+      - name: Run Turnstile
+        if: steps.pr.outputs.number != ''
+        run: node dist/src/bots/turnstile.js
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          BOT_DAILY_CAP_USD: '0.50'

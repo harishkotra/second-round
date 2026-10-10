@@ -13,12 +13,12 @@
 
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { referencedRequirementIds } from '../src/spec/reference.js'
 
 export type ReqIdResult =
   | { ok: true; id: string }
   | { ok: false; reason: string }
 
-const REFERENCE = /(?<=\b(?:Closes|Fixes|Resolves)\s+)[RC]-\d{3}\b/g
 const ID_LINE = /(?<=^\s*-\s*id:\s*)[RC]-\d{3}(?=\s*$)/gm
 
 export function checkReqId(body: string, validIds: Set<string>): ReqIdResult {
@@ -28,7 +28,7 @@ export function checkReqId(body: string, validIds: Set<string>): ReqIdResult {
     return { ok: false, reason: 'pull request body is empty' }
   }
 
-  const referenced = trimmed.match(REFERENCE) ?? []
+  const referenced = referencedRequirementIds(trimmed)
 
   if (referenced.length === 0) {
     return {

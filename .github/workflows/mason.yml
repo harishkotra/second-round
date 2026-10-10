@@ -1,0 +1,52 @@
+name: Mason
+
+# Implements one assigned requirement. Opens a branch and a pull request.
+# Never main, never a merge, never an approval.
+
+on:
+  issues:
+    types: [assigned]
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: 'Issue number to implement'
+        required: true
+        type: string
+
+concurrency:
+  group: bot-sr-mason
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  mason:
+    if: github.event_name == 'workflow_dispatch' || github.event.assignee.login == 'sr-mason[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      - uses: actions/create-github-app-token@v3
+        id: token
+        with:
+          client-id: ${{ vars.APP_SR_MASON_CLIENT_ID }}
+          private-key: ${{ secrets.APP_SR_MASON_PRIVATE_KEY }}
+
+      - name: Run Mason
+        run: node dist/src/bots/mason.js
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue }}
+          PARTICLE_API_KEY: ${{ secrets.PARTICLE_API_KEY }}
+          PARTICLE_BASE_URL: ${{ vars.PARTICLE_BASE_URL }}
+          BOT_DAILY_CAP_USD: '0.50'
