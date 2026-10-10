@@ -1,0 +1,1 @@
+{"ts":"2026-10-10T08:20:10.228Z","bot":"sr-turnstile","action":"pr.reviewed","req":"R-001","artifact":"32","costUsd":0,"verdict":"blocked","reason":"merge-failed: 5 of 5 required status checks are expected. - https://docs.github.com/articles/about-protected-branches"}
