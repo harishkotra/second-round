@@ -29,6 +29,22 @@ function statusOf(error: unknown): number | null {
   return null
 }
 
+/**
+ * A 403 here is almost always a permissions mistake rather than a bug. The
+ * ledger is a git branch, so writing it needs Contents: read and write. A bot
+ * registered read-only can do its work and then die on the record, which is
+ * exactly what happened to sr-sentry on its first run: the review was posted,
+ * and the run still went red because it could not append the event.
+ *
+ * Say that in the error, so the next person does not have to reverse-engineer it.
+ */
+function ledgerWriteHint(branch: string, target: string): string {
+  return (
+    `cannot write ${target} on ${branch}: this App needs Contents: read and write. ` +
+    'The ledger lives on a git branch, so a read-only App can do its work but cannot record it.'
+  )
+}
+
 type RemoteFile = { content: string; sha: string }
 
 async function readFileOnBranch(
@@ -111,12 +127,17 @@ export async function ensureLedgerBranch(
     ref: `heads/${repoInfo.default_branch}`,
   })
 
-  await octokit.request('POST /repos/{owner}/{repo}/git/refs', {
-    owner: ctx.owner,
-    repo: ctx.repo,
-    ref: `refs/heads/${branch}`,
-    sha: head.object.sha,
-  })
+  try {
+    await octokit.request('POST /repos/{owner}/{repo}/git/refs', {
+      owner: ctx.owner,
+      repo: ctx.repo,
+      ref: `refs/heads/${branch}`,
+      sha: head.object.sha,
+    })
+  } catch (error) {
+    if (statusOf(error) === 403) throw new Error(ledgerWriteHint(branch, `the ${branch} branch`))
+    throw error
+  }
 
   return true
 }
@@ -148,8 +169,13 @@ export async function appendRemoteLedger(
     content: Buffer.from(content, 'utf8').toString('base64'),
   }
 
-  await octokit.request(
-    'PUT /repos/{owner}/{repo}/contents/{path}',
-    file === null ? base : { ...base, sha: file.sha },
-  )
+  try {
+    await octokit.request(
+      'PUT /repos/{owner}/{repo}/contents/{path}',
+      file === null ? base : { ...base, sha: file.sha },
+    )
+  } catch (error) {
+    if (statusOf(error) === 403) throw new Error(ledgerWriteHint(branch, ledgerPath(bot)))
+    throw error
+  }
 }

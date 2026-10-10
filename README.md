@@ -48,6 +48,29 @@ cannot push to it, which is deliberate. Each bot appends only to its own file
 two runs of the same bot can never collide. The branch is created automatically
 on the first write.
 
+### App permissions
+
+Each bot is its own GitHub App, and the permissions are the whole safety model: a
+bot can only do what its App was registered to do.
+
+| App | Contents | Issues | Pull requests | Checks |
+|---|---|---|---|---|
+| `hk-sr-foreman` | read and write | read and write | read | — |
+| `hk-sr-mason` | read and write | read | read and write | — |
+| `hk-sr-sentry` | read and write | read | read and write | — |
+| `hk-sr-turnstile` | read and write | read | read and write | read |
+
+**Every bot needs `Contents: read and write`, including the reviewers.** The
+ledger is a git branch, so recording an event is a write. A reviewer registered
+read-only will post its review and then fail on the record, turning a successful
+review into a red run. That is not hypothetical: it is exactly what `sr-sentry`
+did on its first live pull request.
+
+Because a reviewer with write access could otherwise push to the branch it is
+reviewing and then approve its own change, branch protection on `main` also sets
+`require_last_push_approval`, so an approval never covers a push the approver
+made itself.
+
 ## Working on it
 
 ```bash

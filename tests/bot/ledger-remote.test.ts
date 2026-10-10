@@ -123,6 +123,42 @@ describe('appendRemoteLedger', () => {
     await appendRemoteLedger(asOctokit(fake), ctx, 'sr-mason', [], 'message')
     expect(fake.calls).toHaveLength(0)
   })
+
+  test('a 403 names the missing permission instead of the raw status', async () => {
+    const fake = fakeOctokit({
+      [GET]: () => stored([makeEvent({ bot: 'sr-sentry', action: 'pr.opened' })]),
+      [PUT]: () => {
+        throw httpError(403)
+      },
+    })
+    await expect(
+      appendRemoteLedger(
+        asOctokit(fake),
+        ctx,
+        'sr-sentry',
+        [makeEvent({ bot: 'sr-sentry', action: 'pr.reviewed' })],
+        'message',
+      ),
+    ).rejects.toThrow(/Contents: read and write/)
+  })
+
+  test('a write failure that is not a 403 is left alone', async () => {
+    const fake = fakeOctokit({
+      [GET]: () => stored([]),
+      [PUT]: () => {
+        throw httpError(500)
+      },
+    })
+    await expect(
+      appendRemoteLedger(
+        asOctokit(fake),
+        ctx,
+        'sr-mason',
+        [makeEvent({ bot: 'sr-mason', action: 'pr.opened' })],
+        'message',
+      ),
+    ).rejects.toThrow(/HTTP 500/)
+  })
 })
 
 describe('ensureLedgerBranch', () => {
@@ -143,6 +179,22 @@ describe('ensureLedgerBranch', () => {
     })
     expect(await ensureLedgerBranch(asOctokit(fake), ctx)).toBe(true)
     expect(fake.calls.find((call) => call.route === GET_REF)?.params['ref']).toBe('heads/main')
+  })
+
+  test('a 403 creating the branch explains the missing permission', async () => {
+    const fake = fakeOctokit({
+      [GET_BRANCH]: () => {
+        throw httpError(404)
+      },
+      [GET_REPO]: () => ({ default_branch: 'main' }),
+      [GET_REF]: () => ({ object: { sha: 'head' } }),
+      [CREATE_REF]: () => {
+        throw httpError(403)
+      },
+    })
+    await expect(ensureLedgerBranch(asOctokit(fake), ctx)).rejects.toThrow(
+      /Contents: read and write/,
+    )
   })
 })
 
