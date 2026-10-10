@@ -1,0 +1,130 @@
+# Second Round requirements. Single source of truth.
+#
+# Every pull request body must contain "Closes <id>" naming an id defined here,
+# or CI fails (C-002). The Drift Auditor checks built behaviour against this
+# list and reports orphans and gaps (C-008).
+#
+# id format: R-0NN for product requirements, C-0NN for crew-system requirements.
+
+requirements:
+  # ---- Product (Fleet A: the Panel) ----
+  - id: R-001
+    phase: 0
+    text: Accept a pasted job description or a job description URL.
+
+  - id: R-002
+    phase: 0
+    text: Extract at least five competencies, each carrying a quote that appears verbatim in the source job description.
+
+  - id: R-003
+    phase: 0
+    text: Predict the interview loop shape as an ordered list of stages with a rough length for each.
+
+  - id: R-004
+    phase: 0
+    text: Conduct a multi-turn interview of at least twelve questions.
+
+  - id: R-005
+    phase: 0
+    text: Score every answer on the seven-axis rubric, each axis score accompanied by the quoted sentence it is based on.
+
+  - id: R-006
+    phase: 1
+    text: Trigger an adaptive follow-up whenever any axis scores one or below.
+
+  - id: R-007
+    phase: 0
+    text: Detect fumbles, defined as any axis at zero or the Depth axis failing the second why.
+
+  - id: R-008
+    phase: 1
+    text: For every fumble, output the follow-up question a real interviewer would ask next, derived mechanically from the failed axis.
+
+  - id: R-009
+    phase: 0
+    text: Render a debrief showing the transcript, per-answer scores, fumbles, and rewrites.
+
+  - id: R-010
+    phase: 1
+    text: Export a redacted Fumble Card as a shareable image.
+
+  - id: R-011
+    phase: 2
+    text: Persist sessions and allow resuming one.
+
+  - id: R-012
+    phase: 2
+    text: Compare scores across sessions for the same competency.
+
+  - id: R-013
+    phase: 0
+    text: Work in job-description-only mode, with no resume supplied.
+
+  - id: R-014
+    phase: 0
+    text: Show the rubric and what each axis means to the user.
+
+  - id: R-015
+    phase: 0
+    text: Never claim to predict hiring outcomes.
+
+  - id: R-016
+    phase: 0
+    text: Keep transcripts local by default, with sharing as an explicit opt-in.
+
+  - id: R-017
+    phase: 1
+    text: Be keyboard-only usable, with accessible labels on every score view.
+
+  - id: R-018
+    phase: 3
+    text: Support voice mode.
+
+  # ---- Crew system (Fleet B) ----
+  - id: C-001
+    phase: 0
+    text: spec/requirements.yaml is the single source of truth for all work.
+
+  - id: C-002
+    phase: 0
+    text: CI fails any pull request whose body lacks a valid requirement id.
+
+  - id: C-003
+    phase: 0
+    text: A pull request matching a non-goal is blocked automatically.
+
+  - id: C-004
+    phase: 0
+    text: Each bot is a separate GitHub App with least-privilege permissions.
+
+  - id: C-005
+    phase: 0
+    text: Labels are the lease; two bots cannot claim the same issue.
+
+  - id: C-006
+    phase: 0
+    text: Every agent action is appended to ledger/events.ndjson.
+
+  - id: C-007
+    phase: 0
+    text: Merging requires lint, typecheck, test, build, and coverage to pass.
+
+  - id: C-008
+    phase: 1
+    text: A drift report is published weekly.
+
+  - id: C-009
+    phase: 0
+    text: Every rejected pull request records a rejection reason code.
+
+  - id: C-010
+    phase: 0
+    text: Each bot has a daily spend cap, and exceeding it pauses that bot.
+
+  - id: C-011
+    phase: 0
+    text: Changes touching spec/ require a human approval.
+
+  - id: C-012
+    phase: 0
+    text: Every persona lives at .github/agents/<bot>.md and changes only via pull request.

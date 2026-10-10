@@ -1,0 +1,26 @@
+{
+  "name": "second-round",
+  "version": "0.1.0",
+  "private": true,
+  "description": "An interview panel that interrogates you against the real job description, then shows you the follow-up question a real interviewer would ask next.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "lint": "tsx scripts/lint.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "build": "tsc -p tsconfig.build.json",
+    "req-id": "tsx scripts/check-req-id.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@vitest/coverage-v8": "^4.1.11",
+    "tsx": "^4.19.2",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11"
+  }
+}
