@@ -7,6 +7,7 @@
  */
 
 import type { Octokit } from 'octokit'
+import { readConventions, readRepoContext } from '../bot/context.js'
 import { isEntry, type RepoContext } from '../bot/github.js'
 import { callModel } from '../bot/model.js'
 import { parsePatch, type FileChange } from '../bot/patch.js'
@@ -92,26 +93,47 @@ export function buildPrompt(
   requirement: Requirement,
   issueNumber: number,
   paths: string[],
+  conventions = '',
+  context = '',
 ): string {
-  return [
+  const parts = [
     `Implement this requirement from the project spec.`,
     '',
     `Requirement ${requirement.id}: ${requirement.text}`,
     `Tracking issue: #${issueNumber}`,
-    '',
-    'Files that already exist in the repository:',
-    paths.slice(0, 200).join('\n'),
+  ]
+
+  if (conventions !== '') {
+    parts.push('', 'Repository conventions you must follow exactly:', conventions)
+  }
+
+  parts.push('', 'Files that already exist in the repository:', paths.slice(0, 200).join('\n'))
+
+  if (context !== '') {
+    parts.push(
+      '',
+      'Current contents of the source files. Read them before you write anything:',
+      context,
+    )
+  }
+
+  parts.push(
     '',
     'Return ONLY a JSON object, no prose and no code fences, in exactly this shape:',
     '{"files":[{"path":"src/...","content":"<full file contents>"}],"notes":"<anything you could not do, or empty>"}',
     '',
     'Rules:',
     '- Write full file contents, not diffs.',
+    '- Include ONLY the files you actually changed. Do not echo back files you left alone.',
+    '- If this requirement changes existing behaviour, EDIT the existing file. Do not add a',
+    '  new module beside it: a module nothing imports does not satisfy a requirement.',
     '- Only write inside src/, tests/, api/, docs/ or spec/.',
     '- Write real working code with real tests. No placeholders and no mock data.',
     '- Keep every file under 400 lines.',
     '- Do not edit spec/. Changing what is owed is a human decision.',
-  ].join('\n')
+  )
+
+  return parts.join('\n')
 }
 
 export async function issueNumberFromEnv(env: NodeJS.ProcessEnv = process.env): Promise<number> {
@@ -147,6 +169,8 @@ export async function fetchIssue(
 export type MasonDeps = {
   generate: typeof callModel
   issueNumber?: number
+  conventions?: string
+  context?: string
 }
 
 export async function handler(
@@ -171,10 +195,15 @@ export async function handler(
 
   const base = await defaultBranch(run.octokit, run.repo)
   const paths = await listRepoPaths(run.octokit, run.repo, base)
-  const prompt = buildPrompt(requirement, issueNumber, paths)
+  const conventions = deps.conventions ?? (await readConventions())
+  const context = deps.context ?? (await readRepoContext())
+  const prompt = buildPrompt(requirement, issueNumber, paths, conventions, context)
 
   if (run.dryRun) {
-    run.log(`dry run, would implement ${requirement.id} on ${branchName(requirement.id, requirement.text)}`)
+    run.log(
+      `dry run, would implement ${requirement.id} on ${branchName(requirement.id, requirement.text)}` +
+        ` (${conventions.length} chars of conventions, ${context.length} chars of source)`,
+    )
     return []
   }
 

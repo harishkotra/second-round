@@ -141,6 +141,32 @@ describe('buildPrompt', () => {
     expect(prompt).toContain('Do not edit spec/')
     expect(prompt).toContain('src/index.ts')
   })
+
+  test('carries the conventions and the source when they are supplied', () => {
+    const prompt = buildPrompt(
+      requirement,
+      4,
+      ['src/index.ts'],
+      'IMPORTS END IN .js',
+      'export const a = 1',
+    )
+    expect(prompt).toContain('Repository conventions you must follow exactly:')
+    expect(prompt).toContain('IMPORTS END IN .js')
+    expect(prompt).toContain('Read them before you write anything:')
+    expect(prompt).toContain('export const a = 1')
+  })
+
+  test('omits both sections rather than sending empty headings', () => {
+    const prompt = buildPrompt(requirement, 4, ['src/index.ts'])
+    expect(prompt).not.toContain('Repository conventions you must follow exactly:')
+    expect(prompt).not.toContain('Read them before you write anything:')
+  })
+
+  test('forbids the orphan module that failed review on PR #31', () => {
+    const prompt = buildPrompt(requirement, 4, ['src/index.ts'])
+    expect(prompt).toContain('EDIT the existing file')
+    expect(prompt).toContain('a module nothing imports does not satisfy a requirement')
+  })
 })
 
 describe('handler', () => {
