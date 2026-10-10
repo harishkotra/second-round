@@ -1,108 +1,43 @@
 /**
- * R-001: accept a pasted job description or a job description URL.
+ * Accepting a job description (R-001).
  *
- * People arrive with a job description in one of two shapes: text they copied
- * out of a posting, or a link to the posting. Both are accepted here and
- * normalised into one shape, so nothing downstream has to care which it was.
+ * The product starts with the job: either a description the candidate pasted in,
+ * or a URL to one. This module is the single place that decides which of the two
+ * it was handed and normalises it, so every later step can depend on one shape
+ * instead of re-guessing.
  *
- * A URL is fetched and reduced to readable text. Fetching is injected so the
- * whole path is testable without a network, the same way the model client is.
+ * A URL is recognised by its scheme. A bare host such as `example.com/jobs/1` is
+ * treated as pasted text, because guessing at hostnames turns ordinary prose into
+ * false positives.
  */
 
-export type JobSource =
-  | { kind: 'text'; text: string }
+export type JobDescription =
+  | { kind: 'pasted'; text: string }
   | { kind: 'url'; url: string }
-
-export type JobDescription = {
-  source: JobSource
-  text: string
-}
-
-export type LoadJobDeps = {
-  fetchImpl?: typeof fetch
-}
 
 const URL_LIKE = /^https?:\/\/\S+$/i
 
-const HIDDEN = /<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi
-const TAG = /<[^>]*>/g
-const ENTITY = /&(#x?[0-9a-f]+|[a-z]+);/gi
-
-const NAMED_ENTITIES: Record<string, string> = {
-  amp: '&',
-  lt: '<',
-  gt: '>',
-  quot: '\"',
-  apos: "'",
-  nbsp: ' ',
+export function isJobUrl(value: string): boolean {
+  return URL_LIKE.test(value.trim())
 }
 
-/** True when the whole input is a single http(s) URL, not text that mentions one. */
-export function isJobUrl(raw: string): boolean {
-  const trimmed = raw.trim()
-  if (!URL_LIKE.test(trimmed)) return false
+function normalizeUrl(value: string): string {
   try {
-    const url = new URL(trimmed)
-    return url.protocol === 'http:' || url.protocol === 'https:'
+    return new URL(value).toString()
   } catch {
-    return false
+    throw new Error(`not a usable job description URL: ${value}`)
   }
 }
 
-export function parseJobInput(raw: string): JobSource {
+export function acceptJobDescription(raw: string): JobDescription {
   const trimmed = raw.trim()
   if (trimmed === '') {
-    throw new Error('job description is empty: paste the text or give a URL')
-  }
-  return isJobUrl(trimmed) ? { kind: 'url', url: trimmed } : { kind: 'text', text: trimmed }
-}
-
-function decodeEntity(name: string): string {
-  const lower = name.toLowerCase()
-  const code = lower.startsWith('#x')
-    ? Number.parseInt(lower.slice(2), 16)
-    : lower.startsWith('#')
-      ? Number.parseInt(lower.slice(1), 10)
-      : Number.NaN
-
-  if (Number.isInteger(code) && code >= 0 && code <= 0x10ffff) {
-    return String.fromCodePoint(code)
-  }
-  return NAMED_ENTITIES[lower] ?? `&${name};`
-}
-
-/** The readable text of an HTML document: no tags, no scripts, no runs of space. */
-export function htmlToText(html: string): string {
-  return html
-    .replace(HIDDEN, ' ')
-    .replace(TAG, ' ')
-    .replace(ENTITY, (_match, name: string) => decodeEntity(name))
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-export async function loadJobDescription(
-  raw: string,
-  deps: LoadJobDeps = {},
-): Promise<JobDescription> {
-  const source = parseJobInput(raw)
-  if (source.kind === 'text') return { source, text: source.text }
-
-  const doFetch = deps.fetchImpl ?? fetch
-  const response = await doFetch(source.url, {
-    headers: { accept: 'text/html,text/plain;q=0.9,*/*;q=0.8' },
-  })
-
-  if (!response.ok) {
-    throw new Error(
-      `could not fetch the job description: HTTP ${response.status} from ${source.url}`,
-    )
+    throw new Error('a job description or a job description URL is required')
   }
 
-  const text = htmlToText(await response.text())
-  if (text === '') {
-    throw new Error(`the page at ${source.url} contained no readable text`)
+  if (!isJobUrl(trimmed)) {
+    return { kind: 'pasted', text: trimmed }
   }
 
-  return { source, text }
+  return { kind: 'url', url: normalizeUrl(trimmed) }
 }
