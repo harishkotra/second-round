@@ -22,5 +22,9 @@
     "tsx": "^4.19.2",
     "typescript": "^5.9.3",
     "vitest": "^4.1.11"
+  },
+  "dependencies": {
+    "octokit": "^5.0.5",
+    "yaml": "^2.9.1"
   }
 }

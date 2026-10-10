@@ -103,7 +103,7 @@ requirements:
 
   - id: C-006
     phase: 0
-    text: Every agent action is appended to ledger/events.ndjson.
+    text: Every agent action is appended to that bot's own ledger file on the ledger branch, one NDJSON file per bot.
 
   - id: C-007
     phase: 0

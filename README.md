@@ -33,11 +33,20 @@ Both are addressed mechanically here, not by hoping:
 
 ## Status
 
-Phase 0, foundation. The spec, the requirement-ID gate, and CI are in place. The four Phase 0 bots
-(Foreman, Mason, Sentry, Turnstile) are next.
+Phase B, the crew foundation. The spec, the requirement-ID gate, CI, the ledger,
+the bot core, and Foreman are in place and tested. Mason, Sentry, and Turnstile
+are next.
 
 - Design spec: `docs/superpowers/specs/2026-10-10-second-round-design.md`
 - Phase 0 plan: `docs/superpowers/plans/2026-10-10-second-round-phase-0.md`
+
+### Where the ledger lives
+
+The record is on a `ledger` branch, not on `main`. `main` is protected and a bot
+cannot push to it, which is deliberate. Each bot appends only to its own file
+(`ledger/<bot>.ndjson`) and each bot workflow has its own concurrency group, so
+two runs of the same bot can never collide. The branch is created automatically
+on the first write.
 
 ## Working on it
 

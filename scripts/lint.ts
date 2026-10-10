@@ -29,6 +29,12 @@ type Rule = {
 const isTest = (p: string): boolean => p.includes('/tests/') || p.startsWith('tests/')
 const isScript = (p: string): boolean => p.includes('/scripts/') || p.startsWith('scripts/')
 
+// src/bot and src/bots are CLI entry points. Their stdout IS the operational
+// log of the run, which is the deliverable, so console.log there is correct.
+// Library code has no such excuse.
+const CLI_ENTRY_DIRS = ['src/bot/', 'src/bots/']
+const isCliEntry = (p: string): boolean => CLI_ENTRY_DIRS.some((dir) => p.startsWith(dir))
+
 const RULES: Rule[] = [
   {
     name: 'placeholder-comment',
@@ -49,7 +55,7 @@ const RULES: Rule[] = [
     name: 'no-console-in-src',
     pattern: /console\.log\(/,
     detail: 'console.log left in application code',
-    appliesTo: (p) => !isScript(p) && !isTest(p),
+    appliesTo: (p) => !isScript(p) && !isTest(p) && !isCliEntry(p),
   },
   {
     name: 'no-focused-test',
