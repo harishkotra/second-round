@@ -8,7 +8,22 @@
 
 import { Octokit } from 'octokit'
 
-export const BOT_SLUGS = ['sr-foreman', 'sr-mason', 'sr-sentry', 'sr-turnstile'] as const
+/**
+ * The watchdog is the one slug without its own GitHub App, and deliberately so.
+ *
+ * Every other bot has an App because it needs a git identity: it opens pull
+ * requests, reviews them, or merges them. The watchdog must be unable to do any
+ * of those things. It dispatches other bots, releases leases, and files an issue
+ * when it cannot help. Giving it a token that can write code would make it a
+ * fifth builder, which is not the job.
+ */
+export const BOT_SLUGS = [
+  'sr-foreman',
+  'sr-mason',
+  'sr-sentry',
+  'sr-turnstile',
+  'sr-watchdog',
+] as const
 export type BotSlug = (typeof BOT_SLUGS)[number]
 
 export type RepoContext = {

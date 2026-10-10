@@ -71,6 +71,26 @@ reviewing and then approve its own change, branch protection on `main` also sets
 `require_last_push_approval`, so an approval never covers a push the approver
 made itself.
 
+### The watchdog
+
+Five agents work this repository. Four of them build, review and merge, and none
+of them can tell when they have stopped: Mason cannot notice that Mason has failed
+four times running.
+
+`sr-watchdog` is the fifth, and it is the only one without a GitHub App. It has no
+git identity because it must not be able to write code. Its entire job is to
+notice when the crew has stopped and restart it:
+
+- an agent whose last run failed gets one more attempt, at most once an hour
+- an agent that has failed three runs in a row is not retried again. It is
+  escalated to a human with an issue labelled `crew-stalled`, because a bot that
+  fails the same way three times is failing for a reason a retry cannot reach
+- if nothing at all has been recorded for three hours while work is waiting, the
+  builder is nudged
+
+It records every intervention in `ledger/sr-watchdog.ndjson`. A quiet watchdog is
+a working crew, so most runs it does nothing and records nothing.
+
 ## Live dashboard
 
 Two files are regenerated from the ledger every fifteen minutes and on every

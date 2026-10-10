@@ -21,6 +21,8 @@ export const ACTIONS = [
   'budget.exceeded',
   'drift.reported',
   'slop.reported',
+  'stall.retried',
+  'stall.escalated',
 ] as const
 export type Action = (typeof ACTIONS)[number]
 

@@ -26,7 +26,7 @@ import {
 import type { LedgerEvent } from '../src/ledger/schema.js'
 import { loadRequirements } from '../src/spec/load.js'
 
-const BOTS: readonly BotSlug[] = ['sr-foreman', 'sr-mason', 'sr-sentry', 'sr-turnstile']
+const BOTS = ['sr-foreman', 'sr-mason', 'sr-sentry', 'sr-turnstile', 'sr-watchdog'] as const
 
 async function main(): Promise<void> {
   const ctx = repoFromEnv()
