@@ -12,3 +12,4 @@
 {"ts":"2026-10-13T11:21:04.281Z","bot":"sr-watchdog","action":"stall.escalated","req":null,"artifact":"sr-mason","costUsd":0,"verdict":null,"reason":"5 consecutive failures (issue #40)"}
 {"ts":"2026-10-13T18:25:44.230Z","bot":"sr-watchdog","action":"stall.escalated","req":null,"artifact":"sr-mason","costUsd":0,"verdict":null,"reason":"5 consecutive failures (issue #41)"}
 {"ts":"2026-10-13T22:59:39.826Z","bot":"sr-watchdog","action":"stall.retried","req":null,"artifact":"sr-mason","costUsd":0,"verdict":null,"reason":"no ledger activity for 4.6h with 17 ready issue(s) waiting"}
+{"ts":"2026-10-14T01:44:40.526Z","bot":"sr-watchdog","action":"stall.escalated","req":null,"artifact":"sr-mason","costUsd":0,"verdict":null,"reason":"5 consecutive failures (issue #42)"}
