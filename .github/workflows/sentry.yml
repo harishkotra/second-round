@@ -1,0 +1,48 @@
+name: Sentry
+
+# Reviews every pull request against the requirement it claims to satisfy.
+# Its verdict is signal. The gate is CI.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: bot-sr-sentry-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  sentry:
+    # A bot must not review its own pull request, and Sentry must not review
+    # its own review.
+    if: github.event.pull_request.user.login != 'sr-sentry[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      - uses: actions/create-github-app-token@v3
+        id: token
+        with:
+          client-id: ${{ vars.APP_SR_SENTRY_CLIENT_ID }}
+          private-key: ${{ secrets.APP_SR_SENTRY_PRIVATE_KEY }}
+
+      - name: Run Sentry
+        run: node dist/src/bots/sentry.js
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PARTICLE_API_KEY: ${{ secrets.PARTICLE_API_KEY }}
+          PARTICLE_BASE_URL: ${{ vars.PARTICLE_BASE_URL }}
+          BOT_DAILY_CAP_USD: '0.50'

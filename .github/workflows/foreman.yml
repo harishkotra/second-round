@@ -1,0 +1,45 @@
+name: Foreman
+
+# Owns the spec and opens one issue per unmet requirement.
+#
+# The token is minted by actions/create-github-app-token, so this workflow acts
+# as sr-foreman[bot] and nothing else. There is no shared PAT.
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: bot-sr-foreman
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  foreman:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      - uses: actions/create-github-app-token@v3
+        id: token
+        with:
+          client-id: ${{ vars.APP_SR_FOREMAN_CLIENT_ID }}
+          private-key: ${{ secrets.APP_SR_FOREMAN_PRIVATE_KEY }}
+
+      - name: Run Foreman
+        run: node dist/src/bots/foreman.js
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          BOT_DAILY_CAP_USD: '0.50'

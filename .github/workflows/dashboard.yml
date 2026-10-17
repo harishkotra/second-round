@@ -1,0 +1,55 @@
+name: Dashboard
+
+# Renders DASHBOARD.md and CHANGELOG.md from the ledger and publishes them to a
+# `dashboard` branch.
+#
+# main is protected, so a bot cannot push there and should not. The dashboard is
+# a generated artifact, so it gets its own branch, rebuilt from scratch each run.
+# README links to it, and the same content is printed into the run summary.
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: dashboard
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  dashboard:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: Render the dashboard
+        run: node dist/scripts/dashboard.js >> "$GITHUB_STEP_SUMMARY"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+
+      - name: Publish to the dashboard branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan dashboard
+          # -f because both files are gitignored on main: they are generated
+          # artifacts and must never be committed to a protected branch.
+          git add -f DASHBOARD.md CHANGELOG.md
+          git commit -m "dashboard: regenerate from the ledger"
+          git push --force origin dashboard

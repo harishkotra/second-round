@@ -1,0 +1,55 @@
+# Second Round non-goals. Machine-read, not decoration.
+#
+# Any pull request whose behaviour matches a match_term below is blocked by the
+# Gatekeeper (C-003). This list is how the build is mechanically prevented from
+# walking away from the spec, rather than hoping a reviewer notices.
+#
+# Adding a non-goal is itself a spec change and needs a human approval (C-011).
+
+non_goals:
+  - id: NG-01
+    text: Not a resume builder.
+    match_terms:
+      - resume builder
+      - resume template
+      - cv builder
+      - resume score
+
+  - id: NG-02
+    text: Not a job board or application tracker.
+    match_terms:
+      - job board
+      - application tracker
+      - job scraper
+      - apply for jobs
+
+  - id: NG-03
+    text: Not a recruiter tool and not a hiring-decision tool.
+    match_terms:
+      - candidate ranking
+      - screen candidates
+      - hiring decision
+      - applicant tracking
+
+  - id: NG-04
+    text: Does not claim to replace a human interviewer.
+    match_terms:
+      - replace interviewer
+      - robot interviewer
+      - robot lawyer
+      - substitute for a human
+
+  - id: NG-05
+    text: Does not claim that a score predicts an offer or hiring outcome.
+    match_terms:
+      - predict offer
+      - predict hiring
+      - guarantee interview
+      - likelihood of being hired
+
+  - id: NG-06
+    text: Does not store transcripts on a server by default.
+    match_terms:
+      - upload transcript
+      - server-side transcript storage
+      - transcript analytics

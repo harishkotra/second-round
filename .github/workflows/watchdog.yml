@@ -1,0 +1,50 @@
+name: Watchdog
+
+# The only workflow that watches the others.
+#
+# The crew is autonomous but not self-aware: if Mason's runs start failing, or the
+# whole loop goes quiet, nothing notices and nothing says so. This runs every
+# fifteen minutes, retries an agent whose last run failed, and files an issue when
+# retrying has not helped.
+#
+# It has no GitHub App on purpose. Its permissions are the smallest that let it do
+# its job, and none of them let it write code:
+#   actions: write  - to ask another workflow to run again
+#   issues: write   - to escalate to a person
+#   contents: write - to record what it did on the ledger branch
+#
+# It cannot open, review, or merge a pull request.
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+  issues: write
+
+concurrency:
+  group: watchdog
+  cancel-in-progress: false
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - name: Run Watchdog
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node dist/src/bots/watchdog.js
